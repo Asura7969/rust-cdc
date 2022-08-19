@@ -4,12 +4,13 @@ use std::io;
 use std::ops::{Deref, DerefMut};
 
 use bytes::BytesMut;
-use sqlx_rt::{AsyncRead, AsyncReadExt, AsyncWrite};
+// use sqlx_rt::{AsyncRead, AsyncReadExt, AsyncWrite};
 
 use crate::error::Error;
 use crate::io::write_and_flush::WriteAndFlush;
 use crate::io::{decode::Decode, encode::Encode};
 use std::io::Cursor;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncReadExt};
 
 pub struct BufStream<S>
 where

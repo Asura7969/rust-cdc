@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use crate::err_protocol;
 
 use crate::error::Error;
 

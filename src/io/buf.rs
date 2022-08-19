@@ -2,6 +2,7 @@ use std::str::from_utf8;
 
 use bytes::{Buf, Bytes};
 use memchr::memchr;
+use crate::err_protocol;
 
 use crate::error::Error;
 

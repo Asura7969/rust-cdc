@@ -81,7 +81,7 @@ pub enum Error {
 
 }
 
-impl StdError for Box<dyn DatabaseError> {}
+// impl StdError for Box<dyn DatabaseError> {}
 
 impl Error {
 
@@ -100,6 +100,7 @@ impl Error {
 
 
 // Format an error message as a `Protocol` error
+#[macro_export]
 macro_rules! err_protocol {
     ($expr:expr) => {
         $crate::error::Error::Protocol($expr.into())

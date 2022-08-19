@@ -1,9 +1,10 @@
 use bytes::{Buf, Bytes};
+use crate::err_protocol;
 
 use crate::error::Error;
 use crate::io::Decode;
-use crate::protocol::io::MySqlBufExt;
-use crate::protocol::response::Status;
+use crate::mysql::io::MySqlBufExt;
+use crate::mysql::protocol::response::Status;
 
 /// Indicates successful completion of a previous command sent by the client.
 #[derive(Debug)]
