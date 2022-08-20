@@ -132,10 +132,10 @@ async fn encrypt_rsa<'s>(
 ) -> Result<Vec<u8>, Error> {
     // https://mariadb.com/kb/en/caching_sha2_password-authentication-plugin/
 
-    if stream.is_tls() {
-        // If in a TLS stream, send the password directly in clear text
-        return Ok(to_asciz(password));
-    }
+    // if stream.is_tls() {
+    //     // If in a TLS stream, send the password directly in clear text
+    //     return Ok(to_asciz(password));
+    // }
 
     // client sends a public key request
     stream.write_packet(&[public_key_request_id][..]);
@@ -157,7 +157,7 @@ async fn encrypt_rsa<'s>(
 
     // client sends an RSA encrypted password
     let pkey = parse_rsa_pub_key(rsa_pub_key)?;
-    let padding = PaddingScheme::new_oaep::<sha1::Sha1>();
+    let padding = PaddingScheme::new_oaep::<Sha1>();
     pkey.encrypt(&mut thread_rng(), padding, &pass[..])
         .map_err(Error::protocol)
 }

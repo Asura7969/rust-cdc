@@ -1,5 +1,5 @@
-use crate::common::StatementCache;
-use crate::connection::{Connection, LogSettings};
+// use crate::common::StatementCache;
+// use crate::connection::{Connection, LogSettings};
 use crate::error::Error;
 // use crate::mysql::protocol::statement::StmtClose;
 use crate::mysql::protocol::text::{Ping, Quit};
@@ -9,6 +9,7 @@ use crate::mysql::protocol::text::{Ping, Quit};
 use futures_core::future::BoxFuture;
 use futures_util::FutureExt;
 use std::fmt::{self, Debug, Formatter};
+use tokio::io::AsyncWriteExt;
 
 mod establish;
 mod stream;
@@ -36,10 +37,7 @@ impl Debug for MySqlConnection {
     }
 }
 
-impl Connection for MySqlConnection {
-    type Database = MySql;
-
-    type Options = MySqlConnectOptions;
+impl MySqlConnection {
 
     fn close(mut self) -> BoxFuture<'static, Result<(), Error>> {
         Box::pin(async move {

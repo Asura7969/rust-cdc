@@ -7,14 +7,15 @@ use crate::err_protocol;
 use crate::error::Error;
 use crate::io::{BufStream, Decode, Encode};
 use crate::mysql::collation::{CharSet, Collation};
+use crate::mysql::error::MySqlDatabaseError;
 use crate::mysql::io::MySqlBufExt;
 use crate::mysql::protocol::response::{EofPacket, ErrPacket, OkPacket, Status};
 use crate::mysql::protocol::{Capabilities, Packet};
 // use crate::mysql::{MySqlConnectOptions, MySqlDatabaseError};
-use crate::net::{MaybeTlsStream, Socket};
+use crate::net::Socket;
 
 pub struct MySqlStream {
-    stream: BufStream<MaybeTlsStream<Socket>>,
+    stream: BufStream<Socket>,
     pub(crate) server_version: (u16, u16, u16),
     pub(super) capabilities: Capabilities,
     pub(crate) sequence_id: u8,
@@ -37,8 +38,9 @@ impl MySqlStream {
                                 port: u16,
                                 username: &str,
                                 password: Option<String>,
+                                database: Option<String>,
                                 charset: String) -> Result<Self, Error> {
-        let charset: CharSet = options.charset.parse()?;
+        let charset: CharSet = String::from("utf8mb4").parse()?;
         let collation: Collation = charset.default_collation();
 
         let socket = Socket::connect_tcp(host, port).await?;
@@ -56,7 +58,7 @@ impl MySqlStream {
             | Capabilities::PS_MULTI_RESULTS
             | Capabilities::SSL;
 
-        if options.database.is_some() {
+        if database.is_some() {
             capabilities |= Capabilities::CONNECT_WITH_DB;
         }
 
@@ -67,7 +69,7 @@ impl MySqlStream {
             sequence_id: 0,
             collation,
             charset,
-            stream: BufStream::new(MaybeTlsStream::Raw(socket)),
+            stream: BufStream::new(socket),
         })
     }
 
@@ -195,7 +197,7 @@ impl MySqlStream {
 }
 
 impl Deref for MySqlStream {
-    type Target = BufStream<MaybeTlsStream<Socket>>;
+    type Target = BufStream<Socket>;
 
     fn deref(&self) -> &Self::Target {
         &self.stream

@@ -1,7 +1,6 @@
 use bytes::buf::Buf;
 use bytes::Bytes;
 
-use crate::common::StatementCache;
 use crate::err_protocol;
 use crate::error::Error;
 use crate::mysql::connection::{MySqlStream, MAX_PACKET_SIZE, MySqlConnection};
@@ -9,16 +8,17 @@ use crate::mysql::protocol::connect::{
     AuthSwitchRequest, AuthSwitchResponse, Handshake, HandshakeResponse,
 };
 use crate::mysql::protocol::Capabilities;
-use crate::mysql::{MySqlConnectOptions, MySqlConnection, MySqlSslMode};
 
 impl MySqlConnection {
     pub(crate) async fn establish(host: &str,
                                   port: u16,
                                   username: &str,
                                   password: Option<String>,
+                                  database: Option<String>,
                                   charset: String) -> Result<Self, Error> {
         let c_password = password.clone();
-        let mut stream = MySqlStream::connect(host, port, username, c_password, charset).await?;
+        let c_database = database.clone();
+        let mut stream: MySqlStream = MySqlStream::connect(host, port, username, c_password, c_database, charset).await?;
 
         // https://dev.mysql.com/doc/dev/mysql-server/8.0.12/page_protocol_connection_phase.html
         // https://mariadb.com/kb/en/connection/
@@ -62,7 +62,7 @@ impl MySqlConnection {
 
         stream.capabilities.remove(Capabilities::SSL);
 
-        let auth_response = if let (Some(plugin), Some(pwd)) = (plugin, password) {
+        let auth_response = if let (Some(plugin), Some(pwd)) = (plugin, password.clone()) {
             Some(plugin.scramble(&mut stream, pwd.as_str(), &nonce).await?)
         } else {
             None
@@ -107,7 +107,7 @@ impl MySqlConnection {
                 }
 
                 id => {
-                    if let (Some(plugin), Some(password)) = (plugin, &options.password) {
+                    if let (Some(plugin), Some(password)) = (plugin, &password) {
                         if plugin.handle(&mut stream, packet, password, &nonce).await? {
                             // plugin signaled authentication is ok
                             break;
