@@ -1,5 +1,6 @@
 pub mod mysql;
 mod io;
+pub(crate) mod net;
 
 #[macro_use]
 pub mod error;

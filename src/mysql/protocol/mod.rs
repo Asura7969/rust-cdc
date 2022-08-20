@@ -6,4 +6,4 @@ pub(crate) mod response;
 
 pub(crate) use capabilities::Capabilities;
 pub(crate) use packet::Packet;
-// pub(crate) use row::Row;
+pub(crate) mod text;
