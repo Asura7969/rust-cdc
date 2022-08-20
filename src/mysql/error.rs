@@ -1,7 +1,9 @@
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
+use crate::error::DatabaseError;
 
 use crate::mysql::protocol::response::ErrPacket;
+use smallvec::alloc::borrow::Cow;
 
 /// An error returned from the MySQL database.
 pub struct MySqlDatabaseError(pub(super) ErrPacket);
@@ -49,3 +51,30 @@ impl Display for MySqlDatabaseError {
 
 impl Error for MySqlDatabaseError {}
 
+
+impl DatabaseError for MySqlDatabaseError {
+    #[inline]
+    fn message(&self) -> &str {
+        self.message()
+    }
+
+    #[inline]
+    fn code(&self) -> Option<Cow<'_, str>> {
+        self.code().map(Cow::Borrowed)
+    }
+
+    #[doc(hidden)]
+    fn as_error(&self) -> &(dyn Error + Send + Sync + 'static) {
+        self
+    }
+
+    #[doc(hidden)]
+    fn as_error_mut(&mut self) -> &mut (dyn Error + Send + Sync + 'static) {
+        self
+    }
+
+    #[doc(hidden)]
+    fn into_error(self: Box<Self>) -> Box<dyn Error + Send + Sync + 'static> {
+        self
+    }
+}
