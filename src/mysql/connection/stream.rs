@@ -14,6 +14,8 @@ use crate::mysql::protocol::{Capabilities, Packet};
 // use crate::mysql::{MySqlConnectOptions, MySqlDatabaseError};
 use crate::net::Socket;
 
+const MAX_BLOCK_LENGTH: usize = 16777212;
+
 pub struct MySqlStream {
     stream: BufStream<Socket>,
     pub(crate) server_version: (u16, u16, u16),
@@ -159,6 +161,11 @@ impl MySqlStream {
             return Err(
                 MySqlDatabaseError(ErrPacket::decode_with(payload, self.capabilities)?).into(),
             );
+        }
+
+        if packet_size == MAX_BLOCK_LENGTH {
+            // todo: packet size more than 16MB
+            return Err(err_protocol!("packet size more than 16MB"));
         }
 
         Ok(Packet(payload))

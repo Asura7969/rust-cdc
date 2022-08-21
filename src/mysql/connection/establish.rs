@@ -4,9 +4,16 @@ use bytes::Bytes;
 use crate::err_protocol;
 use crate::error::Error;
 use crate::mysql::connection::{MySqlStream, MAX_PACKET_SIZE, MySqlConnection};
+use crate::mysql::event::{EventHeaderV4, EventType};
 use crate::mysql::protocol::connect::{
-    AuthSwitchRequest, AuthSwitchResponse, Handshake, HandshakeResponse,
+    AuthSwitchRequest,
+    AuthSwitchResponse,
+    BinlogFilenameAndPosition,
+    ComBinlogDump,
+    Handshake,
+    HandshakeResponse
 };
+use crate::mysql::protocol::text::Query;
 use crate::mysql::protocol::Capabilities;
 
 impl MySqlConnection {
@@ -15,6 +22,7 @@ impl MySqlConnection {
                                   username: &str,
                                   password: Option<String>,
                                   database: Option<String>,
+                                  server_id: u32,
                                   charset: String) -> Result<Self, Error> {
         let c_password = password.clone();
         let c_database = database.clone();
@@ -124,9 +132,56 @@ impl MySqlConnection {
             }
         }
 
+        // todo: fetchBinlogFilenameAndPosition
+        stream.write_packet(Query("show master status"));
+        stream.flush().await?;
+        let packet = stream.recv_packet().await?;
+        let binlog_fp: BinlogFilenameAndPosition = packet.decode()?;
+        let pos = binlog_fp.binlog_position;
+        let file_name = binlog_fp.binlog_filename;
+
+        // todo: fetchBinlogChecksum
+        // show global variables like 'binlog_checksum'
+
+        // enableHeartbeat
+
+        // send COM_BINLOG_DUMP
+        stream.write_packet(ComBinlogDump {
+            binlog_pos: pos,
+            server_id,
+            binlog_filename: file_name
+        });
+        stream.flush().await?;
+        next_event(&mut stream).await?;
         Ok(Self {
             stream,
             transaction_depth: 0,
         })
     }
+
+
+}
+
+async fn next_event(stream: &mut MySqlStream) -> Result<(), Error> {
+    let packet = stream.recv_packet().await?;
+    let event_header:EventHeaderV4 = packet.decode()?;
+    match event_header.event_type {
+        EventType::FormatDescriptionEvent => {
+            /// https://dev.mysql.com/worklog/task/?id=2540#tabs-2540-4
+            /// +-----------+------------+-----------+------------------------+----------+
+            /// | Header    | Payload (dataLength)   | Checksum Type (1 byte) | Checksum |
+            /// +-----------+------------+-----------+------------------------+----------+
+            ///             |                    (eventBodyLength)                       |
+            ///             +------------------------------------------------------------+
+            unimplemented!()
+        },
+        EventType::TableMapEvent => {
+            unimplemented!()
+        },
+        _ => {
+            unimplemented!()
+        },
+    };
+
+    Ok(())
 }
