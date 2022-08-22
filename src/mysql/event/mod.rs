@@ -1,19 +1,60 @@
 mod xid_event;
 mod query_event;
+mod format_des_event;
 
 
-
+pub(crate) use format_des_event::FormatDescriptionEvent;
 use std::any::Any;
 use std::borrow::Borrow;
 use std::marker::PhantomData;
-use bytes::{Buf, Bytes};
+use std::sync::Arc;
+use bytes::{Buf, Bytes, BytesMut};
 use crate::err_protocol;
 use crate::error::Error;
 use crate::io::Decode;
 
-pub(crate) struct Event<'e, T: EventData<'e>> {
+pub(crate) struct Event<T: EventData> {
     header: EventHeaderV4,
-    data: PhantomData<&'e T>,
+    data: T,
+}
+
+impl <T> Event<T>
+where T: EventData {
+
+    pub(crate) fn decode(mut buf: Bytes) -> Result<Self, Error> {
+        /// [header size is 19]
+        ///
+        /// [header size is 19]: https://dev.mysql.com/doc/internals/en/binlog-event-header.html
+        let mut header_bytes = buf.split_off(20);
+        let header = EventHeaderV4::decode(header_bytes)?;
+
+        let data = match header.event_type {
+            EventType::FormatDescriptionEvent => {
+                /// [Replication event checksums]
+                ///
+                /// [Replication event checksums]: https://dev.mysql.com/worklog/task/?id=2540#tabs-2540-4
+                ///
+                /// ---
+                ///
+                /// +-----------+------------+-----------+------------------------+----------+
+                /// | Header    | Payload (dataLength)   | Checksum Type (1 byte) | Checksum |
+                /// +-----------+------------+-----------+------------------------+----------+
+                ///             |                    (eventBodyLength)                       |
+                ///             +------------------------------------------------------------+
+                FormatDescriptionEvent::decode_with(buf)?
+
+                // unimplemented!()
+            },
+            EventType::TableMapEvent => {
+                unimplemented!()
+            },
+            _ => {
+                unimplemented!()
+            },
+        };
+        // Ok(Self{header, data})
+        unimplemented!()
+    }
 }
 
 // pub(crate) trait EventHeader<'a>: Decode<'a> {
@@ -34,11 +75,11 @@ pub(crate) struct EventHeaderV4 {
     pub(crate) flags: u16,
 }
 
-impl Decode<'_> for EventHeaderV4 {
-    fn decode_with(mut buf: Bytes, _: ()) -> Result<Self, Error> {
+impl EventHeaderV4 {
+    pub(crate) fn decode(mut buf: Bytes) -> Result<Self, Error> {
         Ok(Self {
             timestamp: buf.get_u32_le(),
-            event_type: EventType::try_from_u16(buf.get_u8())?,
+            event_type: EventType::try_from_u8(buf.get_u8())?,
             server_id: buf.get_u32_le(),
             event_size: buf.get_u32_le(),
             log_pos: buf.get_u32_le(),
@@ -73,10 +114,12 @@ impl Decode<'_> for EventHeaderV4 {
 //     }
 // }
 
-pub(crate) trait EventData<'a>: Decode<'a> {
+pub(crate) trait EventData {
 
 }
 
+// https://dev.mysql.com/doc/internals/en/event-classes-and-types.html
+// https://dev.mysql.com/doc/internals/en/event-data-for-specific-event-types.html
 // https://dev.mysql.com/doc/internals/en/binlog-event-type.html
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[repr(u8)]
@@ -120,7 +163,7 @@ pub(crate) enum EventType {
 }
 
 impl EventType {
-    pub(crate) fn try_from_u16(id: u8) -> Result<Self, Error> {
+    pub(crate) fn try_from_u8(id: u8) -> Result<Self, Error> {
         Ok(match id {
             0x00 => EventType::UnknownEvent,
             0x01 => EventType::StartEventV3,

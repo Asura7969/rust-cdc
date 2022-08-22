@@ -13,8 +13,8 @@ pub(crate) struct QueryEventData {
 }
 
 
-impl Decode<'_> for QueryEventData {
-    fn decode_with(mut buf: Bytes, _: ()) -> Result<Self, Error> {
+impl QueryEventData {
+    fn decode_with(mut buf: Bytes) -> Result<Self, Error> {
         Ok(Self{
             slave_proxy_id: buf.get_u32_le(),
             execution_time: buf.get_u32_le(),
@@ -25,6 +25,6 @@ impl Decode<'_> for QueryEventData {
     }
 }
 
-impl EventData<'_> for QueryEventData {
+impl EventData for QueryEventData {
 
 }

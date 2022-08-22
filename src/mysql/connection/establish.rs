@@ -1,10 +1,10 @@
 use bytes::buf::Buf;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 
 use crate::err_protocol;
 use crate::error::Error;
 use crate::mysql::connection::{MySqlStream, MAX_PACKET_SIZE, MySqlConnection};
-use crate::mysql::event::{EventHeaderV4, EventType};
+use crate::mysql::event::{Event, EventData, EventHeaderV4, EventType};
 use crate::mysql::protocol::connect::{
     AuthSwitchRequest,
     AuthSwitchResponse,
@@ -164,24 +164,8 @@ impl MySqlConnection {
 
 async fn next_event(stream: &mut MySqlStream) -> Result<(), Error> {
     let packet = stream.recv_packet().await?;
-    let event_header:EventHeaderV4 = packet.decode()?;
-    match event_header.event_type {
-        EventType::FormatDescriptionEvent => {
-            /// https://dev.mysql.com/worklog/task/?id=2540#tabs-2540-4
-            /// +-----------+------------+-----------+------------------------+----------+
-            /// | Header    | Payload (dataLength)   | Checksum Type (1 byte) | Checksum |
-            /// +-----------+------------+-----------+------------------------+----------+
-            ///             |                    (eventBodyLength)                       |
-            ///             +------------------------------------------------------------+
-            unimplemented!()
-        },
-        EventType::TableMapEvent => {
-            unimplemented!()
-        },
-        _ => {
-            unimplemented!()
-        },
-    };
-
+    let mut bytes = packet.0;
+    let mut bytes_mut = BytesMut::from(bytes.to_vec().as_slice());
+    // let event = Event::decode(bytes_mut)?;
     Ok(())
 }
