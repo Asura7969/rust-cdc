@@ -9,8 +9,8 @@ use crate::mysql::io::MySqlBufExt;
 pub(crate) struct FormatDescriptionEvent {
     binlog_version: u16,
     sever_version: String,
+    create_timestamp: u32,
     header_len: u8,
-    data_len: u8,
     checksum: ChecksumType,
 }
 impl EventData for FormatDescriptionEvent {
@@ -19,30 +19,22 @@ impl EventData for FormatDescriptionEvent {
 
 impl FormatDescriptionEvent {
     pub(crate) fn decode_with(mut buf: Bytes) -> Result<Self, Error> {
-        let event_body_len = buf.remaining();
+        let data_len = buf.remaining();
         let binlog_version = buf.get_u16_le();
         if binlog_version != 4 {
             return Err(err_parse!("can only parse a version 4 binary log"));
         }
         let sever_version = buf.get_bytes(50).get_str_until(0x00)?;
-        let _create_timestamp = buf.get_u32_le();
+        let create_timestamp = buf.get_u32_le();
         let header_len = buf.get_u8();
-        // FORMAT_DESCRIPTION = 15
-        buf.advance(15 - 1);
-        let data_len = buf.get_u8();
-        let checksum_block_len = event_body_len - data_len as usize;
-        let checksum = if checksum_block_len > 0 {
-            let skip = buf.remaining() - checksum_block_len;
-            buf.advance(skip);
-            ChecksumType::CRC32
-        } else {
-            ChecksumType::NONE
-        };
+        let event_types = data_len - 2 - 50 - 4 - 1 - 5;
+        buf.advance(event_types);
+        let checksum = ChecksumType::from(buf.get_u8());
         Ok(Self{
             binlog_version,
             sever_version,
+            create_timestamp,
             header_len,
-            data_len,
             checksum
         })
     }
@@ -50,6 +42,16 @@ impl FormatDescriptionEvent {
 
 
 pub(crate) enum ChecksumType {
-    NONE = 0,
-    CRC32 = 4
+    NONE,
+    CRC32,
+    Other(u8),
+}
+impl From<u8> for ChecksumType {
+    fn from(byte: u8) -> Self {
+        match byte {
+            0x00 => ChecksumType::NONE,
+            0x01 => ChecksumType::CRC32,
+            other => ChecksumType::Other(other),
+        }
+    }
 }
