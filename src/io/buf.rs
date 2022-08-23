@@ -24,7 +24,6 @@ pub trait BufExt: Buf {
 
     fn get_packet_num(&mut self) -> Result<i32, Error>;
 
-    fn read_bitset(&mut self, len: usize, big_endian: bool) -> Result<BitSet, Error>;
 }
 
 impl BufExt for Bytes {
@@ -65,20 +64,13 @@ impl BufExt for Bytes {
     }
 
     fn get_str_until(&mut self, pause: u8) -> Result<String, Error> {
-        let mut slice = vec![];
-        loop {
-            let e = self.get_u8();
-            if e != pause {
-                slice.push(e);
-            } else {
-                break
-            }
-        }
-        let v = from_utf8(slice.as_slice())
-            .map_err(|err| err_protocol!("{}", err))
+        let v = from_utf8(
+            self.split(|c| *c == pause)
+                .next()
+                .unwrap_or(&[])
+        ).map_err(|err| err_protocol!("{}", err))
             .map(ToOwned::to_owned)?;
         Ok(v)
-
     }
 
     fn get_packet_num(&mut self) -> Result<i32, Error> {
@@ -108,18 +100,4 @@ impl BufExt for Bytes {
         }
     }
 
-    fn read_bitset(&mut self, len: usize, big_endian: bool) -> Result<BitSet, Error> {
-        // according to MySQL internals the amount of storage required for N columns is INT((N+7)/8) bytes
-        let mut bytes = self.get_bytes((len + 7) >> 3).to_vec();
-        if !big_endian {
-            bytes.reverse();
-        }
-        let mut result = BitSet::new();
-        for i in 0..bytes.len() {
-            if (bytes[i >> 3] & (1 << (i % 8))) != 0 {
-                result.insert(i);
-            }
-        }
-        Ok(result)
-    }
 }

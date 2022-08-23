@@ -10,10 +10,11 @@ use std::borrow::Borrow;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use bytes::{Buf, Bytes, BytesMut};
-use crate::err_protocol;
+use crate::{err_parse, err_protocol};
 use crate::error::Error;
 use crate::io::Decode;
 use crate::mysql::event::table_map_event::TableMapEvent;
+use crate::mysql::io::MySqlBufExt;
 
 pub(crate) struct Event {
     header: EventHeaderV4,
@@ -234,80 +235,148 @@ impl EventType {
     }
 }
 
-
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub(crate) enum ColumnType {
-    DECIMAL = 0,
-    TINY = 1,
-    SHORT = 2,
-    LONG = 3,
-    FLOAT = 4,
-    DOUBLE = 5,
-    NULL = 6,
-    TIMESTAMP = 7,
-    LONGLONG = 8,
-    INT24 = 9,
-    DATE = 10,
-    TIME = 11,
-    DATETIME = 12,
-    YEAR = 13,
-    NewDate = 14,
-    VARCHAR = 15,
-    BIT = 16,
-    // (TIMESTAMP|DATETIME|TIME)_V2 data types appeared in MySQL 5.6.4
-    // @see http://dev.mysql.com/doc/internals/en/date-and-time-data-type-representation.html
-    TimestampV2 = 17,
-    DatetimeV2 = 18,
-    TimeV2 = 19,
-    JSON = 245,
-    NEWDECIMAL = 246,
-    ENUM = 247,
-    SET = 248,
-    TinyBlob = 249,
-    MediumBlob = 250,
-    LongBlob = 251,
-    BLOB = 252,
-    VarString = 253,
-    STRING = 254,
-    GEOMETRY = 255,
-    // customize enum
-    UNKNOWN = -1,
+    Decimal,
+    Tiny,
+    Short,
+    Long,
+    Float(u8),
+    Double(u8),
+    Null,
+    Timestamp,
+    LongLong,
+    Int24,
+    Date,
+    Time,
+    DateTime,
+    Year,
+    NewDate,
+    Timestamp2(u8),
+    DateTime2(u8),
+    Time2(u8),
+    VarChar(u16),
+    Bit(u8, u8),
+    NewDecimal(u8, u8),
+    Enum(u16),
+    Set(u16),
+    TinyBlob,
+    MediumBlob,
+    LongBlob,
+    Blob(u8),
+    VarString,
+    MyString,
+    Geometry(u8),
+    Json(u8),
+    UNKNOWN(u8),
 }
 
 impl ColumnType {
     fn by_code(i: u8) -> ColumnType {
         match i {
-            0 => ColumnType::DECIMAL,
-            1 => ColumnType::TINY,
-            2 => ColumnType::SHORT,
-            3 => ColumnType::LONG,
-            4 => ColumnType::FLOAT,
-            5 => ColumnType::DOUBLE,
-            6 => ColumnType::NULL,
-            7 => ColumnType::TIMESTAMP,
-            8 => ColumnType::LONGLONG,
-            9 => ColumnType::INT24,
-            10 => ColumnType::DATE,
-            11 => ColumnType::TIME,
-            12 => ColumnType::DATETIME,
-            13 => ColumnType::YEAR,
-            14 => ColumnType::NewDate,
-            15 => ColumnType::VARCHAR,
-            16 => ColumnType::BIT,
-            17 => ColumnType::TimestampV2,
-            18 => ColumnType::DatetimeV2,
-            19 => ColumnType::TimeV2,
-            245 => ColumnType::JSON,
-            246 => ColumnType::NEWDECIMAL,
-            247 => ColumnType::ENUM,
-            248 => ColumnType::SET,
-            249 => ColumnType::TinyBlob,
-            250 => ColumnType::MediumBlob,
-            251 => ColumnType::LongBlob,
-            252 => ColumnType::BLOB,
-            253 => ColumnType::VarString,
-            254 => ColumnType::STRING,
-            255 => ColumnType::GEOMETRY,
-            _ => ColumnType::UNKNOWN
+            0 => ColumnType::Decimal,
+            1 => ColumnType::Tiny,
+            2 => ColumnType::Short,
+            3 => ColumnType::Long,
+            4 => ColumnType::Float(0),
+            5 => ColumnType::Double(0),
+            6 => ColumnType::Null,
+            7 => ColumnType::Timestamp,
+            8 => ColumnType::LongLong,
+            9 => ColumnType::Int24,
+            10 => ColumnType::Date,
+            11 => ColumnType::Time,
+            12 => ColumnType::DateTime,
+            13 => ColumnType::Year,
+            14 => ColumnType::NewDate, // not implemented (or documented)
+            15 => ColumnType::VarChar(0),
+            16 => ColumnType::Bit(0, 0), // not implemented
+            17 => ColumnType::Timestamp2(0),
+            18 => ColumnType::DateTime2(0),
+            19 => ColumnType::Time2(0),
+            245 => ColumnType::Json(0), // need to implement JsonB
+            246 => ColumnType::NewDecimal(0, 0),
+            247 => ColumnType::Enum(0),
+            248 => ColumnType::Set(0),
+            249 => ColumnType::TinyBlob,   // docs say this can't occur
+            250 => ColumnType::MediumBlob, // docs say this can't occur
+            251 => ColumnType::LongBlob,   // docs say this can't occur
+            252 => ColumnType::Blob(0),
+            253 => ColumnType::VarString, // not implemented
+            254 => ColumnType::MyString,
+            255 => ColumnType::Geometry(0), // not implemented
+            b => ColumnType::UNKNOWN(b)
         }
+    }
+
+    fn read_metadata(self, buf: &mut Bytes)  -> Result<Self, Error> {
+        Ok(match self {
+            ColumnType::Float(_) => {
+                let pack_length = buf.get_u8();
+                ColumnType::Float(pack_length)
+            }
+            ColumnType::Double(_) => {
+                let pack_length = buf.get_u8();
+                ColumnType::Double(pack_length)
+            }
+            ColumnType::Blob(_) => {
+                let pack_length = buf.get_u8();
+                ColumnType::Blob(pack_length)
+            }
+            ColumnType::Geometry(_) => {
+                let pack_length = buf.get_u8();
+                ColumnType::Geometry(pack_length)
+            }
+            ColumnType::VarString | ColumnType::VarChar(_) => {
+                let max_length = buf.get_u16_le();
+                assert_ne!(max_length, 0);
+                ColumnType::VarChar(max_length)
+            }
+            ColumnType::Bit(..) => unimplemented!(),
+            ColumnType::NewDecimal(_, _) => {
+                let precision = buf.get_u8();
+                let num_decimals = buf.get_u8();
+                ColumnType::NewDecimal(precision, num_decimals)
+            }
+            ColumnType::MyString => {
+                // In Table_map_event, column type MYSQL_TYPE_STRING
+                // can have the following real_type:
+                // * MYSQL_TYPE_STRING (used for CHAR(n) and BINARY(n) SQL types with n <=255)
+                // * MYSQL_TYPE_ENUM
+                // * MYSQL_TYPE_SET
+                let f1 = buf.get_u8();
+                let f2 = buf.get_u8();
+                let (real_type, max_length) = if f1 == 0 {
+                    // not sure which version of mysql emits this,
+                    // but log_event.cc checks this case
+                    (ColumnType::MyString, f2 as u16)
+                } else {
+                    // The max length is in 0-1023,
+                    // (since CHAR(255) CHARACTER SET utf8mb4 turns into max_length=1020)
+                    // and the upper 4 bits of real_type are always set
+                    // (in real_type = MYSQL_TYPE_ENUM, MYSQL_TYPE_SET, MYSQL_TYPE_STRING)
+                    // So MySQL packs the upper bits of the length
+                    // in the 0x30 bits of the type, inverted
+                    let real_type = f1 | 0x30;
+                    let max_length = (!f1 as u16) << 4 & 0x300 | f2 as u16;
+                    (ColumnType::by_code(real_type), max_length)
+                };
+                match real_type {
+                    ColumnType::MyString => ColumnType::VarChar(max_length),
+                    ColumnType::Set(_) => ColumnType::Set(max_length),
+                    ColumnType::Enum(_) => ColumnType::Enum(max_length),
+                    i => unimplemented!("unimplemented stringy type {:?}", i),
+                }
+            }
+            ColumnType::Enum(_) => {
+                let pack_length = buf.get_u16_le();
+                ColumnType::Enum(pack_length)
+            }
+            ColumnType::DateTime2(..) => ColumnType::DateTime2(buf.get_u8()),
+            ColumnType::Time2(..) => ColumnType::Time2(buf.get_u8()),
+            ColumnType::Timestamp2(..) => ColumnType::Timestamp2(buf.get_u8()),
+            ColumnType::Json(..) => ColumnType::Json(buf.get_u8()),
+            c => c,
+        })
     }
 }

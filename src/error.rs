@@ -52,6 +52,9 @@ pub enum Error {
     #[error("encountered unexpected or invalid data: {0}")]
     Protocol(String),
 
+    #[error("encountered unexpected or invalid data: {0}")]
+    ParseEvent(String),
+
     /// No rows returned by a query that expected to return at least one row.
     #[error("no rows returned by a query that expected to return at least one row")]
     RowNotFound,
@@ -193,6 +196,12 @@ impl Error {
 
     #[allow(dead_code)]
     #[inline]
+    pub(crate) fn parse(err: impl Display) -> Self {
+        Error::ParseEvent(err.to_string())
+    }
+
+    #[allow(dead_code)]
+    #[inline]
     pub(crate) fn config(err: impl StdError + Send + Sync + 'static) -> Self {
         Error::Configuration(err.into())
     }
@@ -208,5 +217,17 @@ macro_rules! err_protocol {
 
     ($fmt:expr, $($arg:tt)*) => {
         $crate::error::Error::Protocol(format!($fmt, $($arg)*))
+    };
+}
+
+
+#[macro_export]
+macro_rules! err_parse {
+    ($expr:expr) => {
+        $crate::error::Error::ParseEvent($expr.into())
+    };
+
+    ($fmt:expr, $($arg:tt)*) => {
+        $crate::error::Error::ParseEvent(format!($fmt, $($arg)*))
     };
 }
