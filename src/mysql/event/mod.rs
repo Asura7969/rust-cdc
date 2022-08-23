@@ -1,6 +1,7 @@
 mod xid_event;
 mod query_event;
 mod format_des_event;
+mod table_map_event;
 
 
 pub(crate) use format_des_event::FormatDescriptionEvent;
@@ -12,14 +13,14 @@ use bytes::{Buf, Bytes, BytesMut};
 use crate::err_protocol;
 use crate::error::Error;
 use crate::io::Decode;
+use crate::mysql::event::table_map_event::TableMapEvent;
 
-pub(crate) struct Event<T: EventData> {
+pub(crate) struct Event {
     header: EventHeaderV4,
-    data: T,
+    data: Box<dyn EventData>,
 }
 
-impl <T> Event<T>
-where T: EventData {
+impl Event {
 
     pub(crate) fn decode(mut buf: Bytes) -> Result<Self, Error> {
         /// [header size is 19]
@@ -28,7 +29,7 @@ where T: EventData {
         let mut header_bytes = buf.split_off(20);
         let header = EventHeaderV4::decode(header_bytes)?;
 
-        let data = match header.event_type {
+        let data: Box<dyn EventData> = match header.event_type {
             EventType::FormatDescriptionEvent => {
                 /// [Replication event checksums]
                 ///
@@ -41,19 +42,19 @@ where T: EventData {
                 /// +-----------+------------+-----------+------------------------+----------+
                 ///             |                    (eventBodyLength)                       |
                 ///             +------------------------------------------------------------+
-                FormatDescriptionEvent::decode_with(buf)?
+                Box::new(FormatDescriptionEvent::decode_with(buf)?)
 
                 // unimplemented!()
             },
             EventType::TableMapEvent => {
-                unimplemented!()
+                Box::new(TableMapEvent::decode_with(buf)?)
             },
             _ => {
                 unimplemented!()
             },
         };
-        // Ok(Self{header, data})
-        unimplemented!()
+        Ok(Self{header, data})
+        // unimplemented!()
     }
 }
 
@@ -230,5 +231,83 @@ impl EventType {
         event_type.eq(&EventType::DeleteRowsEventV0) ||
             event_type.eq(&EventType::DeleteRowsEventV1) ||
             event_type.eq(&EventType::DeleteRowsEventV2)
+    }
+}
+
+
+pub(crate) enum ColumnType {
+    DECIMAL = 0,
+    TINY = 1,
+    SHORT = 2,
+    LONG = 3,
+    FLOAT = 4,
+    DOUBLE = 5,
+    NULL = 6,
+    TIMESTAMP = 7,
+    LONGLONG = 8,
+    INT24 = 9,
+    DATE = 10,
+    TIME = 11,
+    DATETIME = 12,
+    YEAR = 13,
+    NewDate = 14,
+    VARCHAR = 15,
+    BIT = 16,
+    // (TIMESTAMP|DATETIME|TIME)_V2 data types appeared in MySQL 5.6.4
+    // @see http://dev.mysql.com/doc/internals/en/date-and-time-data-type-representation.html
+    TimestampV2 = 17,
+    DatetimeV2 = 18,
+    TimeV2 = 19,
+    JSON = 245,
+    NEWDECIMAL = 246,
+    ENUM = 247,
+    SET = 248,
+    TinyBlob = 249,
+    MediumBlob = 250,
+    LongBlob = 251,
+    BLOB = 252,
+    VarString = 253,
+    STRING = 254,
+    GEOMETRY = 255,
+    // customize enum
+    UNKNOWN = -1,
+}
+
+impl ColumnType {
+    fn by_code(i: u8) -> ColumnType {
+        match i {
+            0 => ColumnType::DECIMAL,
+            1 => ColumnType::TINY,
+            2 => ColumnType::SHORT,
+            3 => ColumnType::LONG,
+            4 => ColumnType::FLOAT,
+            5 => ColumnType::DOUBLE,
+            6 => ColumnType::NULL,
+            7 => ColumnType::TIMESTAMP,
+            8 => ColumnType::LONGLONG,
+            9 => ColumnType::INT24,
+            10 => ColumnType::DATE,
+            11 => ColumnType::TIME,
+            12 => ColumnType::DATETIME,
+            13 => ColumnType::YEAR,
+            14 => ColumnType::NewDate,
+            15 => ColumnType::VARCHAR,
+            16 => ColumnType::BIT,
+            17 => ColumnType::TimestampV2,
+            18 => ColumnType::DatetimeV2,
+            19 => ColumnType::TimeV2,
+            245 => ColumnType::JSON,
+            246 => ColumnType::NEWDECIMAL,
+            247 => ColumnType::ENUM,
+            248 => ColumnType::SET,
+            249 => ColumnType::TinyBlob,
+            250 => ColumnType::MediumBlob,
+            251 => ColumnType::LongBlob,
+            252 => ColumnType::BLOB,
+            253 => ColumnType::VarString,
+            254 => ColumnType::STRING,
+            255 => ColumnType::GEOMETRY,
+            _ => ColumnType::UNKNOWN
+        }
     }
 }

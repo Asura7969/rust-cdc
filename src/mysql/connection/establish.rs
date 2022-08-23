@@ -165,7 +165,6 @@ impl MySqlConnection {
 async fn next_event(stream: &mut MySqlStream) -> Result<(), Error> {
     let packet = stream.recv_packet().await?;
     let mut bytes = packet.0;
-    let mut bytes_mut = BytesMut::from(bytes.to_vec().as_slice());
-    // let event = Event::decode(bytes_mut)?;
+    // let event = Event::decode(bytes)?;
     Ok(())
 }

@@ -10,6 +10,9 @@ pub(crate) struct FormatDescriptionEvent {
     data_len: u8,
     checksum: ChecksumType,
 }
+impl EventData for FormatDescriptionEvent {
+
+}
 
 impl FormatDescriptionEvent {
     pub(crate) fn decode_with(mut buf: Bytes) -> Result<Self, Error> {
