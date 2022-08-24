@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 // use crate::common::StatementCache;
 // use crate::connection::{Connection, LogSettings};
 use crate::error::Error;
@@ -16,6 +17,7 @@ mod stream;
 mod auth;
 
 pub(crate) use stream::{MySqlStream, Waiting};
+use crate::mysql::event::ColumnType;
 
 const MAX_PACKET_SIZE: u32 = 1024;
 
@@ -29,6 +31,52 @@ pub struct MySqlConnection {
     // transaction status
     pub(crate) transaction_depth: usize,
 
+    pub(crate) table_map: TableMap,
+
+}
+
+#[derive(Debug)]
+pub struct SingleTableMap {
+    pub(crate) schema_name: String,
+    pub(crate) table_name: String,
+    pub(crate) columns: Vec<ColumnType>,
+}
+
+pub struct TableMap {
+    inner: BTreeMap<u64, SingleTableMap>,
+}
+
+impl Default for TableMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TableMap {
+    pub fn new() -> Self {
+        TableMap {
+            inner: BTreeMap::new(),
+        }
+    }
+
+    pub fn handle(
+        &mut self,
+        table_id: u64,
+        schema_name: String,
+        table_name: String,
+        columns: Vec<ColumnType>,
+    ) {
+        let map = SingleTableMap {
+            schema_name,
+            table_name,
+            columns,
+        };
+        self.inner.insert(table_id, map);
+    }
+
+    pub fn get(&self, table_id: u64) -> Option<&SingleTableMap> {
+        self.inner.get(&table_id)
+    }
 }
 
 impl Debug for MySqlConnection {

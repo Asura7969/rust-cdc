@@ -14,7 +14,7 @@ pub(crate) struct QueryEventData {
 
 
 impl QueryEventData {
-    fn decode_with(mut buf: Bytes) -> Result<Self, Error> {
+    pub(crate) fn decode_with(mut buf: Bytes) -> Result<Self, Error> {
         let thread_id = buf.get_u32_le();
         let exec_time = buf.get_u32_le();
         let schema_length = buf.get_u8() as usize;

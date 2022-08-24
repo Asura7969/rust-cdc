@@ -6,20 +6,20 @@ use crate::mysql::event::{ColumnType, EventData, EventType};
 use crate::mysql::io::MySqlBufExt;
 
 // https://dev.mysql.com/doc/internals/en/table-map-event.html
-pub(crate) struct TableMapEvent {
-    table_id: u64,
-    schema_name: String,
-    table: String,
-    columns: Vec<ColumnType>,
-    nullable_bitmap: BitSet,
+pub(crate) struct TableMapEventData {
+    pub table_id: u64,
+    pub schema_name: String,
+    pub table: String,
+    pub columns: Vec<ColumnType>,
+    pub nullable_bitmap: BitSet,
 
 }
 
-impl EventData for TableMapEvent {
+impl EventData for TableMapEventData {
 
 }
 
-impl TableMapEvent {
+impl TableMapEventData {
     pub(crate) fn decode_with(mut buf: Bytes) -> Result<Self, Error> {
         let table_id = buf.get_u64_le();
         buf.advance(2);

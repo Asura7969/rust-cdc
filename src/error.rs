@@ -185,6 +185,12 @@ impl<E> From<E> for Error
     }
 }
 
+impl From<uuid::Error> for Error {
+    fn from(error: uuid::Error) -> Self {
+        Error::parse(error)
+    }
+}
+
 
 impl Error {
 

@@ -6,3 +6,4 @@ mod io;
 mod connection;
 mod collation;
 mod event;
+mod value;

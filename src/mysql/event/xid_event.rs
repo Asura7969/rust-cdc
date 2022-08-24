@@ -7,7 +7,7 @@ use crate::mysql::event::EventData;
 pub(crate) struct XidEventData(u64);
 
 impl XidEventData {
-    fn decode_with(mut buf: Bytes) -> Result<Self, Error> {
+    pub(crate) fn decode_with(mut buf: Bytes) -> Result<Self, Error> {
         Ok(Self(buf.get_u64_le()))
     }
 }

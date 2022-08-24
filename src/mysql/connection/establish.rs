@@ -1,9 +1,9 @@
 use bytes::buf::Buf;
 use bytes::{Bytes, BytesMut};
 
-use crate::err_protocol;
+use crate::{err_parse, err_protocol};
 use crate::error::Error;
-use crate::mysql::connection::{MySqlStream, MAX_PACKET_SIZE, MySqlConnection};
+use crate::mysql::connection::{MySqlStream, MAX_PACKET_SIZE, MySqlConnection, TableMap};
 use crate::mysql::event::{Event, EventData, EventHeaderV4, EventType};
 use crate::mysql::protocol::connect::{
     AuthSwitchRequest,
@@ -152,19 +152,35 @@ impl MySqlConnection {
             binlog_filename: file_name
         });
         stream.flush().await?;
-        next_event(&mut stream).await?;
+
+        // load snapshort or init new default
+        let mut table_map = TableMap::default();
+        loop {
+            match next_event(&mut stream, &mut table_map).await {
+                Ok(event) => {
+                    // send event to listener
+                    unimplemented!()
+                },
+                Err(error) => {
+                    // send error to listener
+                    unimplemented!()
+                }
+            }
+        }
+
         Ok(Self {
             stream,
             transaction_depth: 0,
+            table_map,
         })
     }
 
 
 }
 
-async fn next_event(stream: &mut MySqlStream) -> Result<(), Error> {
+async fn next_event(stream: &mut MySqlStream, table_map: &mut TableMap) -> Result<Event, Error> {
     let packet = stream.recv_packet().await?;
     let mut bytes = packet.0;
-    // let event = Event::decode(bytes)?;
-    Ok(())
+    let event = Event::decode(bytes, table_map)?;
+    Ok(event)
 }

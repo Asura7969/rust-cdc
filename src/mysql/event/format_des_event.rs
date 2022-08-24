@@ -6,18 +6,18 @@ use crate::mysql::event::{EventData, EventType};
 use crate::mysql::io::MySqlBufExt;
 
 // https://dev.mysql.com/doc/internals/en/format-description-event.html
-pub(crate) struct FormatDescriptionEvent {
+pub(crate) struct FormatDescriptionEventData {
     binlog_version: u16,
     sever_version: String,
     create_timestamp: u32,
     header_len: u8,
     checksum: ChecksumType,
 }
-impl EventData for FormatDescriptionEvent {
+impl EventData for FormatDescriptionEventData {
 
 }
 
-impl FormatDescriptionEvent {
+impl FormatDescriptionEventData {
     pub(crate) fn decode_with(mut buf: Bytes) -> Result<Self, Error> {
         let data_len = buf.remaining();
         let binlog_version = buf.get_u16_le();
