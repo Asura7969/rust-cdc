@@ -117,7 +117,7 @@ fn parse_rows_event(
         }
         _ => None,
     };
-    let mut rows = Vec::with_capacity(1);
+    // let mut _rows = Vec::with_capacity(1);
     if let Some(table_map) = table_map {
         if let Some(this_table_map) = table_map.get(table_id) {
             match event_type {
@@ -162,7 +162,7 @@ fn parse_one_row(
             MySQLValue::Null
         } else {
             //println!("parsing column {} ({:?})", i, column_definition);
-            column_definition.read_value(&mut cursor)?
+            column_definition.read_value(buf)?
         };
         row.push(Some(val));
         null_index += 1;
@@ -514,6 +514,7 @@ impl ColumnType {
         })
     }
 
+    // https://dev.mysql.com/doc/internals/en/binary-protocol-value.html#packet-ProtocolBinary::MYSQL_TYPE_VARCHAR
     pub fn read_value(&self, r: &mut Bytes) -> Result<MySQLValue, Error> {
         match self {
             &ColumnType::Tiny => Ok(MySQLValue::SignedInteger(i64::from(r.get_i8()))),
@@ -529,8 +530,9 @@ impl ColumnType {
             }),
             &ColumnType::LongLong => Ok(MySQLValue::SignedInteger(r.get_i64_le())),
             &ColumnType::Int24 => {
-                let val = i64::from(read_i24_le(r.get_bytes(32)));
-                Ok(MySQLValue::SignedInteger(val))
+                // let val = i64::from(read_i24_le(r.get_bytes(32)));
+                // Ok(MySQLValue::SignedInteger(val))
+                unimplemented!()
             }
             &ColumnType::Null => Ok(MySQLValue::Null),
             &ColumnType::VarChar(max_len) => {
@@ -538,44 +540,41 @@ impl ColumnType {
                 // since type=real_type=MYSQL_TYPE_STRING is used for BINARY(n)
                 // and type=MYSQL_TYPE_VARCHAR is used for VARBINARY(n)
                 // and also the CHAR(n) and VARCHAR(n) encoding is not always utf-8
-                let value = if max_len > 255 {
-                    r.get_str_lenenc()
-                    read_two_byte_length_prefixed_string(r)?
-                } else {
-                    read_one_byte_length_prefixed_string(r)?
-                };
+                let value = r.get_str_lenenc()?;
                 Ok(MySQLValue::String(value))
             }
             &ColumnType::Year => Ok(MySQLValue::Year(u32::from(r.get_u8()) + 1900)),
             &ColumnType::Date => {
-                let val = read_uint24(r)?;
-                if val == 0 {
-                    Ok(MySQLValue::Null)
-                } else {
-                    let year = (val & ((1 << 15) - 1) << 9) >> 9;
-                    let month = (val & ((1 << 4) - 1) << 5) >> 5;
-                    let day = val & ((1 << 5) - 1);
-                    if year == 0 || month == 0 || day == 0 {
-                        Ok(MySQLValue::Null)
-                    } else {
-                        Ok(MySQLValue::Date { year, month, day })
-                    }
-                }
+                // let val = read_i24_le(r.get_bytes(32)) as u32;
+                // if val == 0 {
+                //     Ok(MySQLValue::Null)
+                // } else {
+                //     let year = (val & ((1 << 15) - 1) << 9) >> 9;
+                //     let month = (val & ((1 << 4) - 1) << 5) >> 5;
+                //     let day = val & ((1 << 5) - 1);
+                //     if year == 0 || month == 0 || day == 0 {
+                //         Ok(MySQLValue::Null)
+                //     } else {
+                //         Ok(MySQLValue::Date { year, month, day })
+                //     }
+                // }
+                unimplemented!()
             }
             &ColumnType::Time => {
-                let val = read_uint24(r)?;
-                let hours = val / 10000;
-                let minutes = (val % 10000) / 100;
-                let seconds = val % 100;
-                Ok(MySQLValue::Time {
-                    hours,
-                    minutes,
-                    seconds,
-                    subseconds: 0,
-                })
+                // let val = read_i24_le(r.get_bytes(32)) as u32;
+                // let hours = val / 10000;
+                // let minutes = (val % 10000) / 100;
+                // let seconds = val % 100;
+                // Ok(MySQLValue::Time {
+                //     hours,
+                //     minutes,
+                //     seconds,
+                //     subseconds: 0,
+                // })
+                unimplemented!()
             }
             &ColumnType::DateTime => {
-                let value = r.read_u64::<LittleEndian>()?;
+                let value = r.get_u64_le();
                 if value == 0 {
                     Ok(MySQLValue::Null)
                 } else {
@@ -606,41 +605,43 @@ impl ColumnType {
             // docs are at
             // https://dev.mysql.com/doc/internals/en/date-and-time-data-type-representation.html
             &ColumnType::DateTime2(pack_length) => {
-                let mut buf = [0u8; 5];
-                r.read_exact(&mut buf)?;
-                let subsecond = read_datetime_subsecond_part(r, pack_length)?;
-                // one bit unused (sign, but always positive
-                buf[0] &= 0x7f;
-                // 17 bits of yearmonth (all of buf[0] and buf[1] and the top 2 bits of buf[2]
-                let year_month: u32 =
-                    ((buf[2] as u32) >> 6) + ((buf[1] as u32) << 2) + ((buf[0] as u32) << 10);
-                let year = year_month / 13;
-                let month = year_month % 13;
-                // 5 bits day (bits 3-7 of buf[2])
-                let day = ((buf[2] & 0x3e) as u32) >> 1;
-                // 5 bits hour (the last bit of buf[2] and the top 4 bits of buf[3]
-                let hour = (((buf[3] & 0xf0) as u32) >> 4) + (((buf[2] & 0x01) as u32) << 4);
-                // 6 bits minute (the bottom 4 bits of buf[3] and the top 2 bits of buf[4]
-                let minute = (buf[4] >> 6) as u32 + (((buf[3] & 0x0f) as u32) << 2);
-                // 6 bits second (the rest of buf[4])
-                let second = (buf[4] & 0x3f) as u32;
-                Ok(MySQLValue::DateTime {
-                    year,
-                    month,
-                    day,
-                    hour,
-                    minute,
-                    second,
-                    subsecond,
-                })
+                // let mut buf = [0u8; 5];
+                // r.read_exact(&mut buf)?;
+                // let subsecond = read_datetime_subsecond_part(r, pack_length)?;
+                // // one bit unused (sign, but always positive
+                // buf[0] &= 0x7f;
+                // // 17 bits of yearmonth (all of buf[0] and buf[1] and the top 2 bits of buf[2]
+                // let year_month: u32 =
+                //     ((buf[2] as u32) >> 6) + ((buf[1] as u32) << 2) + ((buf[0] as u32) << 10);
+                // let year = year_month / 13;
+                // let month = year_month % 13;
+                // // 5 bits day (bits 3-7 of buf[2])
+                // let day = ((buf[2] & 0x3e) as u32) >> 1;
+                // // 5 bits hour (the last bit of buf[2] and the top 4 bits of buf[3]
+                // let hour = (((buf[3] & 0xf0) as u32) >> 4) + (((buf[2] & 0x01) as u32) << 4);
+                // // 6 bits minute (the bottom 4 bits of buf[3] and the top 2 bits of buf[4]
+                // let minute = (buf[4] >> 6) as u32 + (((buf[3] & 0x0f) as u32) << 2);
+                // // 6 bits second (the rest of buf[4])
+                // let second = (buf[4] & 0x3f) as u32;
+                // Ok(MySQLValue::DateTime {
+                //     year,
+                //     month,
+                //     day,
+                //     hour,
+                //     minute,
+                //     second,
+                //     subsecond,
+                // })
+                unimplemented!()
             }
             &ColumnType::Timestamp2(pack_length) => {
-                let whole_part = r.read_i32::<BigEndian>()?;
-                let frac_part = read_datetime_subsecond_part(r, pack_length)?;
-                Ok(MySQLValue::Timestamp {
-                    unix_time: whole_part,
-                    subsecond: frac_part,
-                })
+                // let whole_part = r.get_i32();
+                // let frac_part = read_datetime_subsecond_part(r, pack_length)?;
+                // Ok(MySQLValue::Timestamp {
+                //     unix_time: whole_part,
+                //     subsecond: frac_part,
+                // })
+                unimplemented!()
             }
             &ColumnType::Time2(pack_length) => {
                 // one bit sign
@@ -648,47 +649,52 @@ impl ColumnType {
                 // 10 bits hour
                 // 6 bits minute
                 // 6 bits second
-                let mut buf = [0u8; 3];
-                r.read_exact(&mut buf)?;
-                let hours = (((buf[0] & 0x3f) as u32) << 4) | (((buf[1] & 0xf0) as u32) >> 4);
-                let minutes = (((buf[1] & 0x0f) as u32) << 2) | (((buf[2] & 0xb0) as u32) >> 6);
-                let seconds = (buf[2] & 0x3f) as u32;
-                let frac_part = read_datetime_subsecond_part(r, pack_length)?;
-                Ok(MySQLValue::Time {
-                    hours,
-                    minutes,
-                    seconds,
-                    subseconds: frac_part,
-                })
+
+                // let mut buf = [0u8; 3];
+                // r.read_exact(&mut buf)?;
+                // let hours = (((buf[0] & 0x3f) as u32) << 4) | (((buf[1] & 0xf0) as u32) >> 4);
+                // let minutes = (((buf[1] & 0x0f) as u32) << 2) | (((buf[2] & 0xb0) as u32) >> 6);
+                // let seconds = (buf[2] & 0x3f) as u32;
+                // let frac_part = read_datetime_subsecond_part(r, pack_length)?;
+                // Ok(MySQLValue::Time {
+                //     hours,
+                //     minutes,
+                //     seconds,
+                //     subseconds: frac_part,
+                // })
+                unimplemented!()
             }
             &ColumnType::Blob(length_bytes) => {
-                let val = read_var_byte_length_prefixed_bytes(r, length_bytes)?;
-                Ok(MySQLValue::Blob(val.into()))
+                // let val = read_var_byte_length_prefixed_bytes(r, length_bytes)?;
+                // Ok(MySQLValue::Blob(val.into()))
+                unimplemented!()
             }
             &ColumnType::Float(length) | &ColumnType::Double(length) => {
                 if length == 4 {
-                    Ok(MySQLValue::Float(r.read_f32::<LittleEndian>()?))
+                    Ok(MySQLValue::Float(r.get_f32_le()))
                 } else if length == 8 {
-                    Ok(MySQLValue::Double(r.read_f64::<LittleEndian>()?))
+                    Ok(MySQLValue::Double(r.get_f64_le()))
                 } else {
                     unimplemented!("wtf is a {}-byte float?", length)
                 }
             }
             &ColumnType::NewDecimal(precision, decimal_places) => {
-                let body = read_new_decimal(r, precision, decimal_places)?;
-                Ok(MySQLValue::Decimal(body))
+                // let body = read_new_decimal(r, precision, decimal_places)?;
+                // Ok(MySQLValue::Decimal(body))
+                unimplemented!()
             }
             &ColumnType::Enum(length_bytes) => {
                 let enum_value = match (length_bytes & 0xff) as u8 {
-                    0x01 => i16::from(r.read_i8()?),
-                    0x02 => r.read_i16::<LittleEndian>()?,
+                    0x01 => i16::from(r.get_i8()),
+                    0x02 => r.get_i16_le(),
                     i => unimplemented!("unhandled Enum pack_length {:?}", i),
                 };
                 Ok(MySQLValue::Enum(enum_value))
             }
             &ColumnType::Json(size) => {
-                let body = read_var_byte_length_prefixed_bytes(r, size)?;
-                Ok(MySQLValue::Json(jsonb::parse(body)?))
+                // let body = read_var_byte_length_prefixed_bytes(r, size)?;
+                // Ok(MySQLValue::Json(jsonb::parse(body)?))
+                unimplemented!()
             }
             &ColumnType::TinyBlob
             | &ColumnType::MediumBlob
@@ -697,9 +703,10 @@ impl ColumnType {
             | &ColumnType::MyString => {
                 // the manual promises that these are never present in binlogs and are
                 // not implemented by MySQL
-                Err(ColumnParseError::UnimplementedTypeError {
-                    column_type: self.clone(),
-                })
+                // Err(ColumnParseError::UnimplementedTypeError {
+                //     column_type: self.clone(),
+                // })
+                unimplemented!()
             }
             &ColumnType::Decimal
             | &ColumnType::NewDate
@@ -708,11 +715,7 @@ impl ColumnType {
             | &ColumnType::Geometry(..) => {
                 unimplemented!("unhandled value type: {:?}", self);
             }
+            _ => unimplemented!("unknown type: {:?}", self)
         }
     }
-}
-
-
-fn read_i24_le(buf: Bytes) -> i32 {
-    u32::from_le_bytes(buf.try_into().unwrap()) as i32
 }
