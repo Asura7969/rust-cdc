@@ -17,7 +17,7 @@ mod stream;
 mod auth;
 
 pub(crate) use stream::{MySqlStream, Waiting};
-use crate::mysql::event::ColumnType;
+use crate::mysql::event::{ColTypes};
 
 const MAX_PACKET_SIZE: u32 = 1024;
 
@@ -39,7 +39,7 @@ pub struct MySqlConnection {
 pub struct SingleTableMap {
     pub(crate) schema_name: String,
     pub(crate) table_name: String,
-    pub(crate) columns: Vec<ColumnType>,
+    pub(crate) columns: Vec<ColTypes>,
 }
 
 pub struct TableMap {
@@ -64,7 +64,7 @@ impl TableMap {
         table_id: u64,
         schema_name: String,
         table_name: String,
-        columns: Vec<ColumnType>,
+        columns: Vec<ColTypes>,
     ) {
         let map = SingleTableMap {
             schema_name,

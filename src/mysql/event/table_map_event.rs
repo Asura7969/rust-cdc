@@ -2,7 +2,7 @@ use bit_set::BitSet;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use crate::error::Error;
 use crate::io::{BufExt, Decode};
-use crate::mysql::event::{ColumnType, EventData, EventType};
+use crate::mysql::event::{ColTypes, EventData, EventType};
 use crate::mysql::io::MySqlBufExt;
 
 // https://dev.mysql.com/doc/internals/en/table-map-event.html
@@ -10,7 +10,7 @@ pub(crate) struct TableMapEventData {
     pub table_id: u64,
     pub schema_name: String,
     pub table: String,
-    pub columns: Vec<ColumnType>,
+    pub columns: Vec<ColTypes>,
     pub nullable_bitmap: BitSet,
 
 }
@@ -34,7 +34,7 @@ impl TableMapEventData {
         let column_count  = buf.get_uint_lenenc() as usize;
         let mut columns = Vec::with_capacity(column_count);
         for _ in 0..column_count {
-            let column_type = ColumnType::by_code(buf.get_u8());
+            let column_type = ColTypes::by_code(buf.get_u8());
             columns.push(column_type);
         }
         let _metadata_length = buf.get_uint_lenenc() as usize;
