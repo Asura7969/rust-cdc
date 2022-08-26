@@ -1,11 +1,12 @@
 extern crate core;
 
 pub mod mysql;
-mod io;
+pub mod io;
 pub(crate) mod net;
 
 #[macro_use]
 pub mod error;
+
 
 // #[cfg(test)]
 // mod tests {

@@ -1,3 +1,4 @@
+use std::any::Any;
 use bytes::{Buf, Bytes};
 use crate::error::Error;
 use crate::io::{BufExt, Decode};
@@ -6,7 +7,7 @@ use serde::Serialize;
 
 // https://dev.mysql.com/doc/internals/en/query-event.html
 #[derive(Debug, Serialize, PartialEq, Clone)]
-pub(crate) struct QueryEventData {
+pub struct QueryEventData {
     thread_id: u32,
     exec_time: u32,
     error_code: u16,
@@ -39,5 +40,7 @@ impl QueryEventData {
 }
 
 impl EventData for QueryEventData {
-
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }

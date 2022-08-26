@@ -1,3 +1,4 @@
+use std::any::Any;
 use bytes::{Buf, Bytes};
 use crate::error::Error;
 use crate::io::Decode;
@@ -6,7 +7,7 @@ use serde::Serialize;
 
 // https://dev.mysql.com/doc/internals/en/xid-event.html
 #[derive(Debug, Serialize, PartialEq, Clone)]
-pub(crate) struct XidEventData(u64);
+pub struct XidEventData(u64);
 
 impl XidEventData {
     pub(crate) fn decode_with(mut buf: Bytes) -> Result<Self, Error> {
@@ -14,4 +15,8 @@ impl XidEventData {
     }
 }
 
-impl EventData for XidEventData { }
+impl EventData for XidEventData {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}

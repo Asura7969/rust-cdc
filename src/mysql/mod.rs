@@ -5,5 +5,9 @@ mod error;
 mod io;
 mod connection;
 mod collation;
-mod event;
+pub mod event;
 mod value;
+
+
+pub use event::*;
+pub use connection::*;

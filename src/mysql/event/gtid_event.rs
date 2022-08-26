@@ -1,3 +1,4 @@
+use std::any::Any;
 use bytes::{Buf, Bytes};
 use uuid::Uuid;
 use crate::error::Error;
@@ -6,7 +7,7 @@ use crate::mysql::event::EventData;
 use serde::Serialize;
 
 #[derive(Debug, PartialEq, Clone)]
-pub(crate) struct GtidEventData {
+pub struct GtidEventData {
     flags: u8,
     uuid: Uuid,
     coordinate: u64,
@@ -41,5 +42,7 @@ impl GtidEventData {
 }
 
 impl EventData for GtidEventData {
-
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }

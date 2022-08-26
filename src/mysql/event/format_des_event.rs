@@ -1,3 +1,4 @@
+use std::any::Any;
 use bytes::{Buf, Bytes, BytesMut};
 use crate::err_parse;
 use crate::error::Error;
@@ -6,19 +7,21 @@ use crate::mysql::event::{EventData, EventType};
 use crate::mysql::io::MySqlBufExt;
 
 // https://dev.mysql.com/doc/internals/en/format-description-event.html
-pub(crate) struct FormatDescriptionEventData {
-    binlog_version: u16,
-    sever_version: String,
-    create_timestamp: u32,
-    header_len: u8,
+pub struct FormatDescriptionEventData {
+    pub binlog_version: u16,
+    pub sever_version: String,
+    pub create_timestamp: u32,
+    pub header_len: u8,
     checksum: ChecksumType,
 }
 impl EventData for FormatDescriptionEventData {
-
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl FormatDescriptionEventData {
-    pub(crate) fn decode_with(mut buf: Bytes) -> Result<Self, Error> {
+    pub fn decode_with(mut buf: Bytes) -> Result<Self, Error> {
         let data_len = buf.remaining();
         let binlog_version = buf.get_u16_le();
         if binlog_version != 4 {

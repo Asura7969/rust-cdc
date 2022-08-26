@@ -1,4 +1,4 @@
-mod buf;
+pub mod buf;
 mod buf_mut;
 mod buf_stream;
 mod decode;

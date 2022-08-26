@@ -6,11 +6,11 @@ mod gtid_event;
 mod row;
 
 
-use format_des_event::FormatDescriptionEventData;
-use gtid_event::GtidEventData;
-use xid_event::XidEventData;
-use query_event::QueryEventData;
-use table_map_event::TableMapEventData;
+pub use format_des_event::FormatDescriptionEventData;
+pub use gtid_event::GtidEventData;
+pub use xid_event::XidEventData;
+pub use query_event::QueryEventData;
+pub use table_map_event::TableMapEventData;
 use serde::Serialize;
 use std::any::Any;
 use std::borrow::Borrow;
@@ -27,19 +27,19 @@ use crate::mysql::event::row::{RowsData, RowType};
 use crate::mysql::io::MySqlBufExt;
 use crate::mysql::value::MySQLValue;
 
-pub(crate) struct Event {
-    header: EventHeaderV4,
-    data: Box<dyn EventData>,
+pub struct Event {
+    pub header: EventHeaderV4,
+    pub data: Box<dyn EventData>,
 }
 
 impl Event {
 
-    pub(crate) fn decode(mut buf: Bytes, table_map: &mut TableMap) -> Result<Self, Error> {
+    pub fn decode(mut buf: Bytes, table_map: &mut TableMap) -> Result<Self, Error> {
         /// [header size is 19]
         ///
         /// [header size is 19]: https://dev.mysql.com/doc/internals/en/binlog-event-header.html
-        let mut header_bytes = buf.split_off(20);
-        let header = EventHeaderV4::decode(header_bytes)?;
+
+        let (header, body_buf) = EventHeaderV4::decode(buf)?;
         let event_type = header.event_type;
         let data: Box<dyn EventData> = match header.event_type {
             EventType::FormatDescriptionEvent => {
@@ -54,10 +54,10 @@ impl Event {
                 /// +-----------+------------+-----------+------------------------+----------+
                 ///             |                    (eventBodyLength)                       |
                 ///             +------------------------------------------------------------+
-                Box::new(FormatDescriptionEventData::decode_with(buf)?)
+                Box::new(FormatDescriptionEventData::decode_with(body_buf)?)
             },
             EventType::TableMapEvent => {
-                let data = TableMapEventData::decode_with(buf)?;
+                let data = TableMapEventData::decode_with(body_buf)?;
                 let t_id = data.table_id;
                 let schema = data.schema_name.clone();
                 let table = data.table.clone();
@@ -66,16 +66,16 @@ impl Event {
                 Box::new(data)
             },
             EventType::GtidEvent => {
-                Box::new(GtidEventData::decode_with(buf)?)
+                Box::new(GtidEventData::decode_with(body_buf)?)
             },
             EventType::QueryEvent => {
-                Box::new(QueryEventData::decode_with(buf)?)
+                Box::new(QueryEventData::decode_with(body_buf)?)
             },
             EventType::XidEvent => {
-                Box::new(XidEventData::decode_with(buf)?)
+                Box::new(XidEventData::decode_with(body_buf)?)
             },
             EventType::WriteRowsEventV1 | EventType::WriteRowsEventV2 => {
-                let ev = parse_rows_event(event_type, buf, Some(table_map))?;
+                let ev = parse_rows_event(event_type, body_buf, Some(table_map))?;
                 Box::new(RowsData {
                     tp: RowType::Write,
                     table_id: ev.table_id,
@@ -83,7 +83,7 @@ impl Event {
                 })
             },
             EventType::UpdateRowsEventV1 | EventType::UpdateRowsEventV2 => {
-                let ev = parse_rows_event(event_type, buf, Some(table_map))?;
+                let ev = parse_rows_event(event_type, body_buf, Some(table_map))?;
                 Box::new(RowsData {
                     tp: RowType::Update,
                     table_id: ev.table_id,
@@ -91,15 +91,15 @@ impl Event {
                 })
             },
             EventType::DeleteRowsEventV1 | EventType::DeleteRowsEventV2 => {
-                let ev = parse_rows_event(event_type, buf, Some(table_map))?;
+                let ev = parse_rows_event(event_type, body_buf, Some(table_map))?;
                 Box::new(RowsData {
                     tp: RowType::Delete,
                     table_id: ev.table_id,
                     rows: ev.rows,
                 })
             },
-            _ => {
-                unimplemented!()
+            e@ _ => {
+                return Err(err_protocol!("{:?}", e))
             },
         };
         Ok(Self{header, data})
@@ -234,25 +234,25 @@ struct RowsEvent {
 //     fn get_flags(&self) -> u16;
 // }
 
-pub(crate) struct EventHeaderV4 {
-    pub(crate) timestamp: u32,
-    pub(crate) event_type: EventType,
-    pub(crate) server_id: u32,
-    pub(crate) event_size: u32,
-    pub(crate) log_pos: u32,
-    pub(crate) flags: u16,
+pub struct EventHeaderV4 {
+    pub timestamp: u32,
+    pub event_type: EventType,
+    pub server_id: u32,
+    pub event_size: u32,
+    pub log_pos: u32,
+    pub flags: u16,
 }
 
 impl EventHeaderV4 {
-    pub(crate) fn decode(mut buf: Bytes) -> Result<Self, Error> {
-        Ok(Self {
+    pub(crate) fn decode(mut buf: Bytes) -> Result<(Self, Bytes), Error> {
+        Ok((Self {
             timestamp: buf.get_u32_le(),
             event_type: EventType::try_from_u8(buf.get_u8())?,
             server_id: buf.get_u32_le(),
             event_size: buf.get_u32_le(),
             log_pos: buf.get_u32_le(),
             flags: buf.get_u16_le(),
-        })
+        }, buf))
     }
 }
 
@@ -282,8 +282,8 @@ impl EventHeaderV4 {
 //     }
 // }
 
-pub(crate) trait EventData {
-
+pub trait EventData {
+    fn as_any(&self) -> &dyn Any;
 }
 
 // https://dev.mysql.com/doc/internals/en/event-classes-and-types.html
@@ -291,7 +291,7 @@ pub(crate) trait EventData {
 // https://dev.mysql.com/doc/internals/en/binlog-event-type.html
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[repr(u8)]
-pub(crate) enum EventType {
+pub enum EventType {
     UnknownEvent = 0x00,
     StartEventV3 = 0x01,
     QueryEvent = 0x02,

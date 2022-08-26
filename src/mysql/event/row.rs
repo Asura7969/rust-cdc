@@ -1,3 +1,4 @@
+use std::any::Any;
 use crate::mysql::event::{EventData, RowEvent};
 use serde::Serialize;
 
@@ -16,5 +17,7 @@ pub struct RowsData {
 }
 
 impl EventData for RowsData {
-
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
