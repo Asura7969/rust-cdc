@@ -3,6 +3,7 @@ mod query_event;
 mod format_des_event;
 mod table_map_event;
 mod gtid_event;
+mod row;
 
 
 use format_des_event::FormatDescriptionEventData;
@@ -22,6 +23,7 @@ use crate::{err_parse, err_protocol};
 use crate::error::Error;
 use crate::io::{BufExt, Decode};
 use crate::mysql::connection::{SingleTableMap, TableMap};
+use crate::mysql::event::row::{RowsData, RowType};
 use crate::mysql::io::MySqlBufExt;
 use crate::mysql::value::MySQLValue;
 
@@ -73,14 +75,28 @@ impl Event {
                 Box::new(XidEventData::decode_with(buf)?)
             },
             EventType::WriteRowsEventV1 | EventType::WriteRowsEventV2 => {
-
-                unimplemented!()
+                let ev = parse_rows_event(event_type, buf, Some(table_map))?;
+                Box::new(RowsData {
+                    tp: RowType::Write,
+                    table_id: ev.table_id,
+                    rows: ev.rows,
+                })
             },
             EventType::UpdateRowsEventV1 | EventType::UpdateRowsEventV2 => {
-                unimplemented!()
+                let ev = parse_rows_event(event_type, buf, Some(table_map))?;
+                Box::new(RowsData {
+                    tp: RowType::Update,
+                    table_id: ev.table_id,
+                    rows: ev.rows,
+                })
             },
             EventType::DeleteRowsEventV1 | EventType::DeleteRowsEventV2 => {
-                unimplemented!()
+                let ev = parse_rows_event(event_type, buf, Some(table_map))?;
+                Box::new(RowsData {
+                    tp: RowType::Delete,
+                    table_id: ev.table_id,
+                    rows: ev.rows,
+                })
             },
             _ => {
                 unimplemented!()
@@ -92,9 +108,8 @@ impl Event {
 
 fn parse_rows_event(
     event_type: EventType,
-    data_len: usize,
     mut buf: Bytes,
-    table_map: Option<&TableMap>,
+    table_map: Option<&mut TableMap>,
 ) -> Result<RowsEvent, Error> {
 
     let table_id = buf.get_u64_le();
@@ -118,26 +133,47 @@ fn parse_rows_event(
         }
         _ => None,
     };
-    // let mut _rows = Vec::with_capacity(1);
+    let mut rows = Vec::with_capacity(1);
     if let Some(table_map) = table_map {
         if let Some(this_table_map) = table_map.get(table_id) {
             match event_type {
                 EventType::WriteRowsEventV1 | EventType::WriteRowsEventV2 => {
-                    unimplemented!()
+                    rows.push(RowEvent::NewRow {
+                        cols: parse_one_row(
+                            &mut buf,
+                            this_table_map,
+                            &before_column_bitmask,
+                        )?,
+                    });
                 },
                 EventType::UpdateRowsEventV1 | EventType::UpdateRowsEventV2 => {
-                    unimplemented!()
+                    rows.push(RowEvent::UpdatedRow {
+                        before_cols: parse_one_row(
+                            &mut buf,
+                            this_table_map,
+                            &before_column_bitmask,
+                        )?,
+                        after_cols: parse_one_row(
+                            &mut buf,
+                            this_table_map,
+                            after_column_bitmask.as_ref().unwrap(),
+                        )?,
+                    })
                 },
                 EventType::DeleteRowsEventV1 | EventType::DeleteRowsEventV2 => {
-                    unimplemented!()
+                    rows.push(RowEvent::DeletedRow {
+                        cols: parse_one_row(
+                            &mut buf,
+                            this_table_map,
+                            &before_column_bitmask,
+                        )?,
+                    });
                 },
-                _ => {}
+                _ => unimplemented!(),
             }
         }
     }
-
-
-    unimplemented!()
+    Ok(RowsEvent { table_id, rows })
 }
 
 fn parse_one_row(
@@ -146,20 +182,20 @@ fn parse_one_row(
     present_bitmask: &BitSet,
 ) -> Result<RowData, Error> {
     let num_set_columns = present_bitmask.len();
-    let null_bitmask_size = (num_set_columns + 7) >> 3;
-    let vec = buf.get_bytes(null_bitmask_size).to_vec();
+    let null_bitmap_len = (num_set_columns + 7) >> 3;
+    let vec = buf.get_bytes(null_bitmap_len).to_vec();
     let x = vec.as_slice();
-    let null_bitmask = BitSet::from_bytes(x);
+    let null_bitmap = BitSet::from_bytes(x);
     let mut row = Vec::with_capacity(this_table_map.columns.len());
     let mut null_index = 0;
-    for (i, column_definition) in this_table_map.columns.iter().enumerate() {
+    for (column_idx, column) in this_table_map.columns.iter().enumerate() {
 
-        if !present_bitmask.contains(i) {
+        if !present_bitmask.contains(column_idx) {
             row.push(None);
             continue;
         }
-        let _is_null = null_bitmask.contains(null_index);
-        let (offset, col_val) = column_definition.read_value(buf)?;
+        let _is_null = null_bitmap.contains(null_index);
+        let (offset, col_val) = column.read_value(buf)?;
         row.push(Some(col_val));
         null_index += 1;
     }
@@ -169,7 +205,7 @@ fn parse_one_row(
 
 pub type RowData = Vec<Option<ColValues>>;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq, Clone)]
 #[serde(untagged)]
 pub enum RowEvent {
     NewRow {

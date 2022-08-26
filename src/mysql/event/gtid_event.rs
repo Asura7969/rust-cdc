@@ -3,7 +3,9 @@ use uuid::Uuid;
 use crate::error::Error;
 use crate::io::{BufExt, Decode};
 use crate::mysql::event::EventData;
+use serde::Serialize;
 
+#[derive(Debug, PartialEq, Clone)]
 pub(crate) struct GtidEventData {
     flags: u8,
     uuid: Uuid,

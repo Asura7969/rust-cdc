@@ -4,8 +4,10 @@ use crate::error::Error;
 use crate::io::{BufExt, Decode};
 use crate::mysql::event::{ColTypes, EventData, EventType};
 use crate::mysql::io::MySqlBufExt;
+use serde::Serialize;
 
 // https://dev.mysql.com/doc/internals/en/table-map-event.html
+#[derive(Debug, PartialEq, Clone)]
 pub(crate) struct TableMapEventData {
     pub table_id: u64,
     pub schema_name: String,
@@ -24,11 +26,11 @@ impl TableMapEventData {
         let table_id = buf.get_u64_le();
         buf.advance(2);
         let schema_name_length = buf.get_u8() as usize;
-        let schema_name = buf.get_bytes(schema_name_length).get_str_nul()?;
+        let schema_name = buf.get_str(schema_name_length)?;
         // nul byte
         buf.advance(1);
         let table_name_length = buf.get_u8() as usize;
-        let table = buf.get_bytes(table_name_length).get_str_nul()?;
+        let table = buf.get_str(table_name_length)?;
         // nul byte
         buf.advance(1);
         let column_count  = buf.get_uint_lenenc() as usize;

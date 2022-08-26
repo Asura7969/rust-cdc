@@ -2,8 +2,10 @@ use bytes::{Buf, Bytes};
 use crate::error::Error;
 use crate::io::Decode;
 use crate::mysql::event::EventData;
+use serde::Serialize;
 
 // https://dev.mysql.com/doc/internals/en/xid-event.html
+#[derive(Debug, Serialize, PartialEq, Clone)]
 pub(crate) struct XidEventData(u64);
 
 impl XidEventData {

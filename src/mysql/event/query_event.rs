@@ -2,8 +2,10 @@ use bytes::{Buf, Bytes};
 use crate::error::Error;
 use crate::io::{BufExt, Decode};
 use crate::mysql::event::EventData;
+use serde::Serialize;
 
 // https://dev.mysql.com/doc/internals/en/query-event.html
+#[derive(Debug, Serialize, PartialEq, Clone)]
 pub(crate) struct QueryEventData {
     thread_id: u32,
     exec_time: u32,
