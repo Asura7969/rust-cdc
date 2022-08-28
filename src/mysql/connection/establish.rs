@@ -1,10 +1,20 @@
 use bytes::buf::Buf;
 use bytes::{Bytes, BytesMut};
 
-use crate::{err_parse, err_protocol};
+use crate::err_protocol;
 use crate::error::Error;
-use crate::mysql::connection::{MySqlStream, MAX_PACKET_SIZE, MySqlConnection, TableMap};
-use crate::mysql::event::{Event, EventData, EventHeaderV4, EventType};
+use crate::mysql::connection::{
+    MySqlStream,
+    MAX_PACKET_SIZE,
+    MySqlConnection,
+    TableMap
+};
+use crate::mysql::event::{
+    Event,
+    EventData,
+    EventHeaderV4,
+    EventType
+};
 use crate::mysql::protocol::connect::{
     AuthSwitchRequest,
     AuthSwitchResponse,
@@ -181,6 +191,7 @@ impl MySqlConnection {
 async fn next_event(stream: &mut MySqlStream, table_map: &mut TableMap) -> Result<Event, Error> {
     let packet = stream.recv_packet().await?;
     let mut bytes = packet.0;
-    let event = Event::decode(bytes, table_map)?;
+    // todo
+    let (event, _op_buf) = Event::decode(bytes, table_map)?;
     Ok(event)
 }

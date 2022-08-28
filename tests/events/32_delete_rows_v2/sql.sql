@@ -1,10 +1,13 @@
-DROP TABLE IF EXISTS `boxercrab`;
+reset master;
+DROP TABLE IF EXISTS `rustcdc`;
 
-CREATE TABLE `boxercrab` (
-    `id` INT UNSIGNED AUTO_INCREMENT,
-    `title` VARCHAR(40) NOT NULL,
-    PRIMARY KEY (`id`)
+CREATE TABLE `rustcdc` (
+                           `id` INT UNSIGNED AUTO_INCREMENT,
+                           `title` VARCHAR(40) NOT NULL,
+                           PRIMARY KEY (`id`)
 )ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-INSERT INTO `boxercrab` (`title`) VALUES ('abcde');
-DELETE FROM `boxercrab`;
+INSERT INTO `rustcdc` (`title`) VALUES ('abcde');
+DELETE FROM `rustcdc` where 1=1;
+
+flush logs;

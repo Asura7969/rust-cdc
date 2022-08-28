@@ -1,11 +1,11 @@
-DROP TABLE IF EXISTS `boxercrab`;
+DROP TABLE IF EXISTS `rustcdc`;
 
-CREATE TABLE `boxercrab` (
+CREATE TABLE `rustcdc` (
     `id` INT UNSIGNED AUTO_INCREMENT,
     `title` VARCHAR(40) NOT NULL,
     PRIMARY KEY (`id`)
 )ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 BEGIN;
-INSERT INTO `boxercrab` (`title`) VALUES ('hahhhhhhhhh');
+INSERT INTO `rustcdc` (`title`) VALUES ('cdc-1');
 COMMIT;

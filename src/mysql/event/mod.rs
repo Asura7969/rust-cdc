@@ -4,9 +4,14 @@ mod format_des_event;
 mod table_map_event;
 mod gtid_event;
 mod row;
+mod previous_gtids_event;
+mod unknown_event;
 
 
 pub use format_des_event::FormatDescriptionEventData;
+pub use format_des_event::ChecksumType;
+pub use previous_gtids_event::PreviousGtidsEventData;
+pub use unknown_event::UnknownEventData;
 pub use gtid_event::GtidEventData;
 pub use xid_event::XidEventData;
 pub use query_event::QueryEventData;
@@ -32,16 +37,23 @@ pub struct Event {
     pub data: Box<dyn EventData>,
 }
 
+pub fn has_buf(mut buf: Bytes) -> Option<Bytes>{
+    if buf.has_remaining() {
+        Some(buf)
+    } else {
+        None
+    }
+}
+
 impl Event {
 
-    pub fn decode(mut buf: Bytes, table_map: &mut TableMap) -> Result<Self, Error> {
+    pub fn decode(mut buf: Bytes, table_map: &mut TableMap) -> Result<(Event, Option<Bytes>), Error> {
         /// [header size is 19]
         ///
         /// [header size is 19]: https://dev.mysql.com/doc/internals/en/binlog-event-header.html
-
         let (header, body_buf) = EventHeaderV4::decode(buf)?;
         let event_type = header.event_type;
-        let data: Box<dyn EventData> = match header.event_type {
+        let (data, op_buf) = match header.event_type {
             EventType::FormatDescriptionEvent => {
                 /// [Replication event checksums]
                 ///
@@ -54,55 +66,56 @@ impl Event {
                 /// +-----------+------------+-----------+------------------------+----------+
                 ///             |                    (eventBodyLength)                       |
                 ///             +------------------------------------------------------------+
-                Box::new(FormatDescriptionEventData::decode_with(body_buf)?)
+                let (ev, op_buf) = FormatDescriptionEventData::decode_with(body_buf, &header)?;
+                (ev, op_buf)
             },
             EventType::TableMapEvent => {
-                let data = TableMapEventData::decode_with(body_buf)?;
-                let t_id = data.table_id;
-                let schema = data.schema_name.clone();
-                let table = data.table.clone();
-                let columns = data.columns.to_vec();
+                let (ev, op_buf) = TableMapEventData::decode_with(body_buf)?;
+                let table_map_ev = ev.as_any().downcast_ref::<TableMapEventData>().unwrap();
+                let t_id = table_map_ev.table_id;
+                let schema = table_map_ev.schema_name.clone();
+                let table = table_map_ev.table.clone();
+                let columns = table_map_ev.columns.to_vec();
                 table_map.handle(t_id, schema, table, columns);
-                Box::new(data)
+                (ev, op_buf)
+            },
+            EventType::PreviousGtidsEvent => {
+                let (ev, op_buf) = PreviousGtidsEventData::decode_with(body_buf, &header)?;
+                (ev, op_buf)
+            },
+            EventType::UnknownEvent => {
+                let (ev, op_buf) = UnknownEventData::decode_with(body_buf, &header)?;
+                (ev, op_buf)
             },
             EventType::GtidEvent => {
-                Box::new(GtidEventData::decode_with(body_buf)?)
+                let (ev, op_buf) = GtidEventData::decode_with(body_buf)?;
+                (ev, op_buf)
             },
             EventType::QueryEvent => {
-                Box::new(QueryEventData::decode_with(body_buf)?)
+                let (ev, op_buf) = QueryEventData::decode_with(body_buf)?;
+                (ev, op_buf)
             },
             EventType::XidEvent => {
-                Box::new(XidEventData::decode_with(body_buf)?)
+                let (ev, op_buf) = XidEventData::decode_with(body_buf)?;
+                (ev, op_buf)
             },
             EventType::WriteRowsEventV1 | EventType::WriteRowsEventV2 => {
-                let ev = parse_rows_event(event_type, body_buf, Some(table_map))?;
-                Box::new(RowsData {
-                    tp: RowType::Write,
-                    table_id: ev.table_id,
-                    rows: ev.rows,
-                })
+                let (ev, op_buf) = parse_rows_event(event_type, body_buf, Some(table_map))?;
+                (RowsData::write(ev.table_id, ev.rows), op_buf)
             },
             EventType::UpdateRowsEventV1 | EventType::UpdateRowsEventV2 => {
-                let ev = parse_rows_event(event_type, body_buf, Some(table_map))?;
-                Box::new(RowsData {
-                    tp: RowType::Update,
-                    table_id: ev.table_id,
-                    rows: ev.rows,
-                })
+                let (ev, op_buf) = parse_rows_event(event_type, body_buf, Some(table_map))?;
+                (RowsData::update(ev.table_id, ev.rows), op_buf)
             },
             EventType::DeleteRowsEventV1 | EventType::DeleteRowsEventV2 => {
-                let ev = parse_rows_event(event_type, body_buf, Some(table_map))?;
-                Box::new(RowsData {
-                    tp: RowType::Delete,
-                    table_id: ev.table_id,
-                    rows: ev.rows,
-                })
+                let (ev, op_buf) = parse_rows_event(event_type, body_buf, Some(table_map))?;
+                (RowsData::delete(ev.table_id, ev.rows), op_buf)
             },
             e@ _ => {
                 return Err(err_protocol!("{:?}", e))
             },
         };
-        Ok(Self{header, data})
+        Ok((Self{header, data}, op_buf))
     }
 }
 
@@ -110,13 +123,19 @@ fn parse_rows_event(
     event_type: EventType,
     mut buf: Bytes,
     table_map: Option<&mut TableMap>,
-) -> Result<RowsEvent, Error> {
+) -> Result<(RowsEvent, Option<Bytes>), Error> {
 
-    let table_id = buf.get_u64_le();
-    buf.advance(2);
+    let mut table_bytes = buf.get_bytes(6);
+    let table_id = table_bytes.get_uint_lenenc();
+    buf.advance(2); // flags
     match event_type {
         EventType::WriteRowsEventV2 | EventType::UpdateRowsEventV2 | EventType::DeleteRowsEventV2 => {
-            let _ = buf.get_i16_le();
+            let _extra_data_len = buf.get_u16_le();
+            // match extra_data_len {
+            //     // https://dev.mysql.com/doc/internals/en/rows-event.html#write-rows-eventv0
+            //     2 => unimplemented!(), // nothing
+            //     _ => unimplemented!(),
+            // }
         }
         _ => {}
     }
@@ -173,14 +192,14 @@ fn parse_rows_event(
             }
         }
     }
-    Ok(RowsEvent { table_id, rows })
+    Ok((RowsEvent { table_id, rows }, has_buf(buf)))
 }
 
 fn parse_one_row(
     buf: &mut Bytes,
     this_table_map: &SingleTableMap,
     present_bitmask: &BitSet,
-) -> Result<RowData, Error> {
+) -> Result<Vec<ColValues>, Error> {
     let num_set_columns = present_bitmask.len();
     let null_bitmap_len = (num_set_columns + 7) >> 3;
     let vec = buf.get_bytes(null_bitmap_len).to_vec();
@@ -191,19 +210,18 @@ fn parse_one_row(
     for (column_idx, column) in this_table_map.columns.iter().enumerate() {
 
         if !present_bitmask.contains(column_idx) {
-            row.push(None);
             continue;
         }
         let _is_null = null_bitmap.contains(null_index);
-        let (offset, col_val) = column.read_value(buf)?;
-        row.push(Some(col_val));
+        let (_offset, col_val) = column.read_value(buf)?;
+        row.push(col_val);
         null_index += 1;
     }
     //println!("finished row: {:?}", row);
     Ok(row)
 }
 
-pub type RowData = Vec<Option<ColValues>>;
+pub type RowData = Vec<ColValues>;
 
 #[derive(Debug, Serialize, PartialEq, Clone)]
 #[serde(untagged)]
@@ -220,9 +238,10 @@ pub enum RowEvent {
     },
 }
 
-struct RowsEvent {
-    table_id: u64,
-    rows: Vec<RowEvent>,
+#[derive(Debug, Serialize, PartialEq, Clone)]
+pub struct RowsEvent {
+    pub table_id: u64,
+    pub rows: Vec<RowEvent>,
 }
 
 // pub(crate) trait EventHeader<'a>: Decode<'a> {

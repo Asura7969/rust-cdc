@@ -5,6 +5,7 @@ use crate::error::Error;
 use crate::io::{BufExt, Decode};
 use crate::mysql::event::EventData;
 use serde::Serialize;
+use crate::mysql::has_buf;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct GtidEventData {
@@ -17,7 +18,7 @@ pub struct GtidEventData {
 
 
 impl GtidEventData {
-    pub(crate) fn decode_with(mut buf: Bytes) -> Result<Self, Error> {
+    pub(crate) fn decode_with(mut buf: Bytes) -> Result<(Box<dyn EventData>, Option<Bytes>), Error> {
         let flags = buf.get_u8();
         let uuid_vec = buf.get_bytes(16).to_vec();
         let uuid_slice = uuid_vec.as_slice();
@@ -31,13 +32,13 @@ impl GtidEventData {
             }
             _ => (None, None),
         };
-        Ok(Self {
+        Ok((Box::new(Self {
             flags,
             uuid,
             coordinate: offset,
             last_committed,
             sequence_number,
-        })
+        }), has_buf(buf)))
     }
 }
 
