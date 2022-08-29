@@ -501,20 +501,10 @@ impl ColTypes {
             ColTypes::MediumBlob => (0, ColValues::MediumBlob),
             ColTypes::LongBlob => (0, ColValues::LongBlob),
             ColTypes::Blob(len_bytes) => {
-                let len = match len_bytes {
-                    1 => buf.get_u8() as usize,
-                    2 => buf.get_u16_le() as usize,
-                    3 => {
-                        let mut bytes = &buf.get_bytes(4)[0..3];
-                        byteorder::LittleEndian::read_u32(&mut bytes) as usize
-                    }
-                    4 => buf.get_u32_le() as usize,
-                    8 => buf.get_u64_le() as usize,
-                    l => unreachable!("got unexpected length {0:?}", l),
-                };
-
-                (len_bytes as usize + len,
-                    ColValues::Blob(buf.get_bytes(len).to_vec()))
+                let mut len_buf = buf.get_bytes(len_bytes as usize);
+                let len = len_buf.get_uint_lenenc();
+                let v = buf.get_bytes(len as usize).to_vec();
+                (len_bytes as usize, ColValues::Blob(v))
             }
             ColTypes::VarString(_, _) => {
                 // TODO should check string max_len ?
