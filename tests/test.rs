@@ -3,10 +3,10 @@ extern crate core;
 use bit_set::BitSet;
 use bytes::{Buf, BufMut, Bytes};
 use rustcdc::*;
-use rustcdc::mysql::{ChecksumType, ColValues, Event, FormatDescriptionEventData, RowEvent, RowsEvent, TableMap, TableMapEventData, XidEventData};
+use rustcdc::mysql::{ChecksumType, ColValues, Event, MysqlEvent, RowsEvent, RowType, TableMap};
 use rustcdc::io::buf::BufExt;
 use rustcdc::mysql::ColTypes::{Long, VarChar};
-use rustcdc::mysql::RowEvent::NewRow;
+use rustcdc::mysql::RowType::NewRow;
 
 #[test]
 fn test_format_desc() {
@@ -15,12 +15,19 @@ fn test_format_desc() {
     buf.get_bytes(4);
     let mut table_map = TableMap::default();
     let (event, _) = Event::decode(buf, &mut table_map).unwrap();
-    match event.data.as_any().downcast_ref::<FormatDescriptionEventData>() {
-        Some(fde) => {
-            assert_eq!(fde.binlog_version, 4);
-            assert_eq!(fde.sever_version, "8.0.21");
-            assert_eq!(fde.create_timestamp, 0);
-            assert_eq!(fde.checksum, ChecksumType::CRC32)
+    match event {
+        MysqlEvent::FormatDescriptionEvent {
+            header,
+            binlog_version,
+            sever_version,
+            create_timestamp,
+            header_len,
+            checksum,
+        } => {
+            assert_eq!(binlog_version, 4);
+            assert_eq!(sever_version, "8.0.21");
+            assert_eq!(create_timestamp, 0);
+            assert_eq!(checksum, ChecksumType::CRC32)
         },
 
         _ => panic!("should be format desc"),
@@ -36,20 +43,24 @@ fn test_xid() {
     let mut table_map = TableMap::default();
     loop {
         let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
-        if let Some(xid) = event.data.as_any().downcast_ref::<XidEventData>() {
-            assert_eq!(xid.0, 852);
-            break
-        } else {
-            match op_buf {
-                Some(mut bytes) => {
-                    bytes.get_bytes(4);
-                    buf = bytes
-                },
-                None => panic!("should be format xid"),
+        match event {
+            MysqlEvent::XidEvent {
+                header, xid
+            } => {
+                assert_eq!(xid, 852);
+                break
+            },
+            _ => {
+                match op_buf {
+                    Some(mut bytes) => {
+                        bytes.get_bytes(4);
+                        buf = bytes
+                    },
+                    None => panic!("should be format xid"),
+                }
             }
         }
     }
-
 }
 
 #[test]
@@ -66,19 +77,30 @@ fn test_table_map() {
 
     loop {
         let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
-        if let Some(tmed) = event.data.as_any().downcast_ref::<TableMapEventData>() {
-            assert_eq!(tmed.table_id, 71);
-            assert_eq!(tmed.table, "rustcdc");
-            assert_eq!(tmed.columns, vec![Long, VarChar(160)]);
-            assert_eq!(tmed.nullable_bitmap, set);
-            break
-        } else {
-            match op_buf {
-                Some(mut bytes) => {
-                    bytes.get_bytes(4);
-                    buf = bytes
-                },
-                None => panic!("should be format table map"),
+        match event {
+            MysqlEvent::TableMapEvent {
+                header,
+                table_id,
+                schema_name,
+                table,
+                columns,
+                nullable_bitmap,
+            } => {
+                assert_eq!(table_id, 71);
+                assert_eq!(schema_name, "rustcdc");
+                assert_eq!(table, "rustcdc");
+                assert_eq!(columns, vec![Long, VarChar(160)]);
+                assert_eq!(nullable_bitmap, set);
+                break
+            },
+            _ => {
+                match op_buf {
+                    Some(mut bytes) => {
+                        bytes.get_bytes(4);
+                        buf = bytes
+                    },
+                    None => panic!("should be format table map"),
+                }
             }
         }
     }
@@ -96,20 +118,29 @@ fn test_write_rows_v2() {
     let re = NewRow { cols };
     loop {
         let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
-        if let Some(_) = event.data.as_any().downcast_ref::<TableMapEventData>() {
-            assert!(table_map.get(71).is_some());
-            break
-        } else if let Some(row_event) = event.data.as_any().downcast_ref::<RowsEvent>() {
-            assert_eq!(row_event.table_id, 71);
-            assert_eq!(row_event.rows, vec![re]);
-            break
-        } else {
-            match op_buf {
-                Some(mut bytes) => {
-                    bytes.get_bytes(4);
-                    buf = bytes
-                },
-                None => panic!("should write_rows_v2"),
+        match event {
+            MysqlEvent::TableMapEvent {
+                ..
+            } => {
+                assert!(table_map.get(71).is_some());
+                buf = op_buf.unwrap();
+            },
+            MysqlEvent::WriteEvent {
+                header,
+                rows,
+            } => {
+                assert_eq!(rows.table_id, 71);
+                assert_eq!(rows.rows, vec![re]);
+                break
+            },
+            _ => {
+                match op_buf {
+                    Some(mut bytes) => {
+                        bytes.get_bytes(4);
+                        buf = bytes
+                    },
+                    None => panic!("should write rows v2"),
+                }
             }
         }
     }
@@ -147,7 +178,7 @@ fn test_update_rows_v2() {
         ColValues::NewDecimal(vec![128, 0, 4, 0, 0]),
     ];
 
-    let expect_row = RowEvent::UpdatedRow {
+    let expect_row = RowType::UpdatedRow {
         before_cols: before,
         after_cols: after,
     };
@@ -156,23 +187,31 @@ fn test_update_rows_v2() {
 
     loop {
         let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
-        if let Some(_) = event.data.as_any().downcast_ref::<TableMapEventData>() {
-            assert!(table_map.get(72).is_some());
-            break
-        } else if let Some(row_event) = event.data.as_any().downcast_ref::<RowsEvent>() {
-            assert_eq!(row_event.rows, vec![expect_row]);
-            break
-        } else {
-            match op_buf {
-                Some(mut bytes) => {
-                    bytes.get_bytes(4);
-                    buf = bytes
-                },
-                None => panic!("should be update_row_v2"),
+        match event {
+            MysqlEvent::TableMapEvent {
+                ..
+            } => {
+                assert!(table_map.get(72).is_some());
+                buf = op_buf.unwrap();
+            },
+            MysqlEvent::UpdateEvent {
+                header,
+                rows,
+            } => {
+                assert_eq!(rows.rows, vec![expect_row]);
+                break
+            },
+            _ => {
+                match op_buf {
+                    Some(mut bytes) => {
+                        bytes.get_bytes(4);
+                        buf = bytes
+                    },
+                    None => panic!("should be update row v2"),
+                }
             }
         }
     }
-
 }
 
 #[test]
@@ -182,32 +221,40 @@ fn test_delete_rows_v2() {
     buf.get_bytes(901);
     let mut table_map = TableMap::default();
 
-
     loop {
         let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
-        if let Some(_) = event.data.as_any().downcast_ref::<TableMapEventData>() {
-            assert!(table_map.get(76).is_some());
-            break
-        } else if let Some(row_event) = event.data.as_any().downcast_ref::<RowsEvent>() {
-            assert_eq!(row_event.table_id, 76);
-            // assert_eq!(row_event.column_count, 2);
-            assert_eq!(
-                row_event.rows,
-                vec![RowEvent::DeletedRow {
-                    cols: vec![
-                        ColValues::Long(vec![1, 0, 0, 0]),
-                        ColValues::VarChar(vec![97, 98, 99, 100, 101])
-                    ]
-                }]
-            );
-            break
-        } else {
-            match op_buf {
-                Some(mut bytes) => {
-                    bytes.get_bytes(4);
-                    buf = bytes
-                },
-                None => panic!("should be delete rows v2"),
+        match event {
+            MysqlEvent::TableMapEvent {
+                ..
+            } => {
+                assert!(table_map.get(76).is_some());
+                buf = op_buf.unwrap();
+            },
+            MysqlEvent::DeleteEvent {
+                header,
+                rows,
+            } => {
+                assert_eq!(rows.table_id, 76);
+                // assert_eq!(row_event.column_count, 2);
+                assert_eq!(
+                    rows.rows,
+                    vec![RowType::DeletedRow {
+                        cols: vec![
+                            ColValues::Long(vec![1, 0, 0, 0]),
+                            ColValues::VarChar(vec![97, 98, 99, 100, 101])
+                        ]
+                    }]
+                );
+                break
+            },
+            _ => {
+                match op_buf {
+                    Some(mut bytes) => {
+                        bytes.get_bytes(4);
+                        buf = bytes
+                    },
+                    None => panic!("should be delete rows v2"),
+                }
             }
         }
     }

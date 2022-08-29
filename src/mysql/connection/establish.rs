@@ -11,10 +11,10 @@ use crate::mysql::connection::{
 };
 use crate::mysql::event::{
     Event,
-    EventData,
     EventHeaderV4,
     EventType
 };
+use crate::mysql::MysqlEvent;
 use crate::mysql::protocol::connect::{
     AuthSwitchRequest,
     AuthSwitchResponse,
@@ -188,7 +188,7 @@ impl MySqlConnection {
 
 }
 
-async fn next_event(stream: &mut MySqlStream, table_map: &mut TableMap) -> Result<Event, Error> {
+async fn next_event(stream: &mut MySqlStream, table_map: &mut TableMap) -> Result<MysqlEvent, Error> {
     let packet = stream.recv_packet().await?;
     let mut bytes = packet.0;
     // todo
