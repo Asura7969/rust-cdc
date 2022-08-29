@@ -124,6 +124,7 @@ fn test_write_rows_v2() {
             } => {
                 assert!(table_map.get(71).is_some());
                 buf = op_buf.unwrap();
+                buf.get_bytes(4);
             },
             MysqlEvent::WriteEvent {
                 header,
@@ -193,6 +194,7 @@ fn test_update_rows_v2() {
             } => {
                 assert!(table_map.get(72).is_some());
                 buf = op_buf.unwrap();
+                buf.get_bytes(4);
             },
             MysqlEvent::UpdateEvent {
                 header,
@@ -229,6 +231,7 @@ fn test_delete_rows_v2() {
             } => {
                 assert!(table_map.get(76).is_some());
                 buf = op_buf.unwrap();
+                buf.get_bytes(4);
             },
             MysqlEvent::DeleteEvent {
                 header,
