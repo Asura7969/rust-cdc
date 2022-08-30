@@ -7,7 +7,7 @@ use crate::err_parse;
 use crate::error::Error;
 use crate::io::{BufExt, Decode};
 use crate::mysql::event::{EventType, ColTypes};
-use crate::mysql::{ColValues, EventHeaderV4, has_buf, MysqlEvent, RowType, RowsEvent, SingleTableMap, TableMap};
+use crate::mysql::{ColValues, EventHeaderV4, has_buf, MysqlEvent, RowType, RowsEvent, SingleTableMap, TableMap, replace_note};
 use crate::mysql::io::MySqlBufExt;
 
 pub(crate) fn decode_delete_row(mut buf: Bytes,
@@ -56,21 +56,25 @@ pub(crate) fn decode_query(mut buf: Bytes,
     let error_code = buf.get_u16_le();
     // if binlog-version ≥ 4:
     let status_vars = buf.get_u16_le() as usize;
-    buf.get_bytes(status_vars);
+    buf.advance(status_vars);
 
-    // buf.advance(status_vars);
-
-    let schema = buf.get_bytes(schema_length).get_str_nul()?;
+    let schema = buf.get_str(schema_length)?;
     buf.advance(1);
-    let query = buf.get_str_nul()?;
-
+    let query_len = header.event_size - 19 - 4 - 4 - 1 - 2 - 2 - status_vars as u32 - schema_length as u32 - 1 - 4;
+    let query_bytes = buf.get_bytes(query_len as usize).to_vec();
+    let input = query_bytes.as_slice();
+    let null_end = input
+        .iter()
+        .position(|&c| c == b'\0')
+        .unwrap_or(input.len());
+    let query = String::from_utf8_lossy(&input[0..null_end]).to_string();
     Ok((MysqlEvent::QueryEvent {
         header,
         thread_id,
         exec_time,
         error_code,
         schema,
-        query,
+        query: replace_note(query),
     }, has_buf(buf)))
 }
 

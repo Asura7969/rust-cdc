@@ -9,6 +9,7 @@ use std::sync::Arc;
 use bit_set::BitSet;
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, Bytes, BytesMut};
+use regex::Regex;
 use uuid::Uuid;
 use crate::{err_parse, err_protocol};
 use crate::error::Error;
@@ -17,6 +18,13 @@ use crate::mysql::connection::{SingleTableMap, TableMap};
 use crate::mysql::event::decode::*;
 use crate::mysql::io::MySqlBufExt;
 use crate::mysql::value::MySQLValue;
+
+pub(crate) const R_STR:&str = r"(/\*)(.*)(\*/)(\s)*";
+
+pub(crate) fn replace_note(old_str: String) -> String {
+    let cow = Regex::new(R_STR).unwrap().replace_all(old_str.as_str(), "");
+    cow.to_string()
+}
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum MysqlEvent {

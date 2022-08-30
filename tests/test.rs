@@ -262,3 +262,78 @@ fn test_delete_rows_v2() {
         }
     }
 }
+
+
+#[test]
+fn test_query() {
+    let input = include_bytes!("events/query/mysql-bin.000001").to_vec();
+    let mut buf = Bytes::from(input);
+    buf.get_bytes(256);
+    let mut table_map = TableMap::default();
+    let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
+    match event {
+        MysqlEvent::QueryEvent {
+            header,
+            thread_id,
+            exec_time,
+            error_code,
+            schema,
+            query,
+        } => {
+            assert_eq!(thread_id, 8);
+            assert_eq!(exec_time, 0);
+            assert_eq!(error_code, 0);
+            assert_eq!(schema, "rustcdc");
+            assert_eq!(query, "CREATE TABLE `rustcdc` (\r\n                             `id` INT UNSIGNED AUTO_INCREMENT,\r\n                             `title` VARCHAR(40) NOT NULL,\r\n                             PRIMARY KEY (`id`)\r\n)ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        },
+        _ => panic!("should be query"),
+    }
+}
+
+
+#[test]
+fn test_gtid_prev_gtid() {
+    let input = include_bytes!("events/gtid_prev_gtid/mysql-bin.000001").to_vec();
+    let mut buf = Bytes::from(input);
+    buf.get_bytes(120);
+    let mut table_map = TableMap::default();
+    let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
+    match event {
+        MysqlEvent::PreviousGtidsEvent {
+            header,
+            gtid_sets,
+            buf_size,
+            checksum,
+        } => {
+            assert_eq!(gtid_sets, vec![0,0,0,0]);
+            assert_eq!(buf_size, 0);
+            assert_eq!(checksum, 3421036636);
+        },
+        _ => panic!("should be gtid prev gtid"),
+    }
+}
+
+// todo
+#[test]
+fn test_gtid() {
+    let input = include_bytes!("events/gtid_prev_gtid/mysql-bin.000001").to_vec();
+    let mut buf = Bytes::from(input);
+    buf.get_bytes(151);
+    let mut table_map = TableMap::default();
+    let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
+    match event {
+        MysqlEvent::GtidEvent {
+            header,
+            flags,
+            uuid,
+            coordinate,
+            last_committed,
+            sequence_number,
+        } => {
+            // assert_eq!(gtid_sets, vec![0,0,0,0]);
+            // assert_eq!(buf_size, 0);
+            // assert_eq!(checksum, 3421036636);
+        },
+        _ => panic!("should be gtid"),
+    }
+}
