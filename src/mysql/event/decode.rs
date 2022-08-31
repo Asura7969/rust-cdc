@@ -80,27 +80,50 @@ pub(crate) fn decode_query(mut buf: Bytes,
 
 pub(crate) fn decode_gtid(mut buf: Bytes,
                           header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
-    let flags = buf.get_u8();
-    let uuid_vec = buf.get_bytes(16).to_vec();
-    let uuid_slice = uuid_vec.as_slice();
-    let uuid = Uuid::from_slice(uuid_slice)?;
-    let offset = buf.get_u64_le();
-    let (last_committed, sequence_number) = match buf.get_u8() {
-        0x02 => {
-            let last_committed = buf.get_u64_le();
-            let sequence_number = buf.get_u64_le();
-            (Some(last_committed), Some(sequence_number))
-        }
-        _ => (None, None),
-    };
+    let rbr_only = buf.get_u8() == 0;
+    let uuid_bytes = buf.get_bytes(16);
+    let source_id =
+        format!("{}-{}-{}-{}-{}",
+                uuid_bytes[..4].iter().fold(String::new(), |mut acc, i| {
+                    acc.push_str(&i.to_string());
+                    acc
+                }),
+                uuid_bytes[4..6].iter().fold(String::new(), |mut acc, i| {
+                    acc.push_str(&i.to_string());
+                    acc
+                }),
+                uuid_bytes[6..8].iter().fold(String::new(), |mut acc, i| {
+                    acc.push_str(&i.to_string());
+                    acc
+                }),
+                uuid_bytes[8..10].iter().fold(String::new(), |mut acc, i| {
+                    acc.push_str(&i.to_string());
+                    acc
+                }),
+                uuid_bytes[10..].iter().fold(String::new(), |mut acc, i| {
+                    acc.push_str(&i.to_string());
+                    acc
+                })
+        );
+    let transaction_id = buf.get_bytes(8)
+        .iter().fold(String::new(), |mut acc, i| {
+            acc.push_str(&i.to_string());
+            acc
+        });
+    let ts_type = buf.get_u8();
+    let last_committed = buf.get_u64_le();
+    let sequence_number = buf.get_u64_le();
+    let checksum = buf.get_u32_le();
 
     Ok((MysqlEvent::GtidEvent {
         header,
-        flags,
-        uuid,
-        coordinate: offset,
+        rbr_only,
+        source_id,
+        transaction_id,
+        ts_type,
         last_committed,
         sequence_number,
+        checksum,
     }, has_buf(buf)))
 }
 

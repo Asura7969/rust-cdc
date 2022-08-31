@@ -39,11 +39,13 @@ pub enum MysqlEvent {
     },
     GtidEvent {
         header: EventHeaderV4,
-        flags: u8,
-        uuid: Uuid,
-        coordinate: u64,
-        last_committed: Option<u64>,
-        sequence_number: Option<u64>,
+        rbr_only: bool,
+        source_id: String,
+        transaction_id: String,
+        ts_type: u8,
+        last_committed: u64,
+        sequence_number: u64,
+        checksum: u32,
     },
     PreviousGtidsEvent {
         header: EventHeaderV4,

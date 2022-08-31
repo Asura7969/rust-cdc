@@ -324,15 +324,18 @@ fn test_gtid() {
     match event {
         MysqlEvent::GtidEvent {
             header,
-            flags,
-            uuid,
-            coordinate,
+            rbr_only,
+            source_id,
+            transaction_id,
+            ts_type,
             last_committed,
             sequence_number,
+            checksum,
         } => {
-            // assert_eq!(gtid_sets, vec![0,0,0,0]);
-            // assert_eq!(buf_size, 0);
-            // assert_eq!(checksum, 3421036636);
+            assert_eq!(source_id, "1491772540-38142-17237-179156-421219623515223");
+            assert_eq!(transaction_id, "10000000");
+            assert_eq!(last_committed, 171996707144779968 as u64);
+            assert_eq!(sequence_number, 584115552257 as u64);
         },
         _ => panic!("should be gtid"),
     }

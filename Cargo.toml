@@ -17,6 +17,7 @@ thiserror = "1.0.30"
 memchr = { version = "2.4.1", default-features = false }
 futures-core = { version = "0.3.19", default-features = false }
 futures-util = { version = "0.3.19", default-features = false, features = ["alloc", "sink"] }
+futures = "0.3.21"
 digest = { version = "0.10.3", features = ["std"] }
 generic-array = "0.14.6"
 rand = { version = "0.8.5", features = ["std", "std_rng"] }
