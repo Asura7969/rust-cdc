@@ -313,7 +313,6 @@ fn test_gtid_prev_gtid() {
     }
 }
 
-// todo
 #[test]
 fn test_gtid() {
     let input = include_bytes!("events/gtid_prev_gtid/mysql-bin.000001").to_vec();
@@ -324,18 +323,36 @@ fn test_gtid() {
     match event {
         MysqlEvent::GtidEvent {
             header,
-            rbr_only,
-            source_id,
-            transaction_id,
-            ts_type,
-            last_committed,
-            sequence_number,
+            flags,
+            uuid,
+            gno,
             checksum,
         } => {
-            assert_eq!(source_id, "1491772540-38142-17237-179156-421219623515223");
-            assert_eq!(transaction_id, "10000000");
-            assert_eq!(last_committed, 171996707144779968 as u64);
-            assert_eq!(sequence_number, 584115552257 as u64);
+            assert_eq!(flags, 1 as u8);
+            assert_eq!(&uuid.to_string(), "95b11928-268e-11ed-b39c-04d4c4eb9817");
+            assert_eq!(gno, 1 as u64);
+        },
+        _ => panic!("should be gtid"),
+    }
+}
+
+#[test]
+fn test_rotate() {
+    let input = include_bytes!("events/gtid_prev_gtid/mysql-bin.000001").to_vec();
+    let mut buf = Bytes::from(input);
+    buf.get_bytes(999);
+    let mut table_map = TableMap::default();
+    let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
+    match event {
+        MysqlEvent::RotateEvent {
+            header,
+            position,
+            next_binlog,
+            checksum,
+        } => {
+            assert_eq!(position, 4 as u64);
+            assert_eq!(next_binlog, "mysql-bin.000002");
+            assert_eq!(checksum, 2314217416 as u32);
         },
         _ => panic!("should be gtid"),
     }

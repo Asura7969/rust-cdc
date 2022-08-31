@@ -7,7 +7,16 @@ use crate::err_parse;
 use crate::error::Error;
 use crate::io::{BufExt, Decode};
 use crate::mysql::event::{EventType, ColTypes};
-use crate::mysql::{ColValues, EventHeaderV4, has_buf, MysqlEvent, RowType, RowsEvent, SingleTableMap, TableMap, replace_note};
+use crate::mysql::{
+    ColValues,
+    EventHeaderV4,
+    has_buf,
+    MysqlEvent,
+    RowType,
+    RowsEvent,
+    SingleTableMap,
+    TableMap,
+    replace_note};
 use crate::mysql::io::MySqlBufExt;
 
 pub(crate) fn decode_delete_row(mut buf: Bytes,
@@ -78,53 +87,68 @@ pub(crate) fn decode_query(mut buf: Bytes,
     }, has_buf(buf)))
 }
 
-pub(crate) fn decode_gtid(mut buf: Bytes,
-                          header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
-    let rbr_only = buf.get_u8() == 0;
-    let uuid_bytes = buf.get_bytes(16);
-    let source_id =
-        format!("{}-{}-{}-{}-{}",
-                uuid_bytes[..4].iter().fold(String::new(), |mut acc, i| {
-                    acc.push_str(&i.to_string());
-                    acc
-                }),
-                uuid_bytes[4..6].iter().fold(String::new(), |mut acc, i| {
-                    acc.push_str(&i.to_string());
-                    acc
-                }),
-                uuid_bytes[6..8].iter().fold(String::new(), |mut acc, i| {
-                    acc.push_str(&i.to_string());
-                    acc
-                }),
-                uuid_bytes[8..10].iter().fold(String::new(), |mut acc, i| {
-                    acc.push_str(&i.to_string());
-                    acc
-                }),
-                uuid_bytes[10..].iter().fold(String::new(), |mut acc, i| {
-                    acc.push_str(&i.to_string());
-                    acc
-                })
-        );
-    let transaction_id = buf.get_bytes(8)
-        .iter().fold(String::new(), |mut acc, i| {
-            acc.push_str(&i.to_string());
-            acc
-        });
-    let ts_type = buf.get_u8();
-    let last_committed = buf.get_u64_le();
-    let sequence_number = buf.get_u64_le();
+pub(crate) fn decode_rotate(mut buf: Bytes,
+                            header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
+    let position = buf.get_u64_le();
+    let str_len = header.event_size - 19 - 8 - 4;
+    let next_binlog = buf.get_str(str_len as usize)?;
     let checksum = buf.get_u32_le();
-
-    Ok((MysqlEvent::GtidEvent {
+    Ok((MysqlEvent::RotateEvent {
         header,
-        rbr_only,
-        source_id,
-        transaction_id,
-        ts_type,
-        last_committed,
-        sequence_number,
+        position,
+        next_binlog,
         checksum,
     }, has_buf(buf)))
+}
+
+
+pub(crate) fn decode_gtid(mut buf: Bytes,
+                          header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
+    let (flags, uuid, gno, _, _, checksum) = gtid(&mut buf, false)?;
+    Ok((MysqlEvent::GtidEvent {
+        header,
+        flags,
+        uuid,
+        gno,
+        // last_committed,
+        // sequence_number,
+        checksum
+    }, has_buf(buf)))
+}
+
+pub(crate) fn decode_anonymous_gtid(mut buf: Bytes,
+                                    header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
+    let (flags, uuid, gno, last_committed, sequence_number, checksum) = gtid(&mut buf, true)?;
+    Ok((MysqlEvent::AnonymousGtidEvent {
+        header,
+        flags,
+        uuid,
+        gno,
+        last_committed,
+        sequence_number,
+        checksum
+    }, has_buf(buf)))
+}
+
+fn gtid(buf: &mut Bytes, flag: bool) -> Result<(u8, Uuid, u64, Option<u64>, Option<u64>, u32), Error>{
+    let flags = buf.get_u8();
+    let sid = buf.get_bytes(16).to_vec();
+    let uuid = Uuid::from_slice(sid.as_slice())?;
+    let gno = buf.get_bytes(8).get_uint_lenenc();
+    let (last_committed, sequence_number) = if flag {
+        match buf.get_u8() {
+            0x02 => {
+                let last_committed = buf.get_u64_le();
+                let sequence_number = buf.get_u64_le();
+                (Some(last_committed), Some(sequence_number))
+            }
+            _ => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+    let checksum = buf.get_u32_le();
+    Ok((flags, uuid, gno, last_committed, sequence_number, checksum))
 }
 
 pub(crate) fn decode_unknown(mut buf: Bytes,

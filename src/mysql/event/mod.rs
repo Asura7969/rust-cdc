@@ -39,12 +39,26 @@ pub enum MysqlEvent {
     },
     GtidEvent {
         header: EventHeaderV4,
-        rbr_only: bool,
-        source_id: String,
-        transaction_id: String,
-        ts_type: u8,
-        last_committed: u64,
-        sequence_number: u64,
+        flags: u8,
+        uuid: Uuid,
+        gno: u64,
+        // last_committed: Option<u64>,
+        // sequence_number: Option<u64>,
+        checksum: u32,
+    },
+    AnonymousGtidEvent {
+        header: EventHeaderV4,
+        flags: u8,
+        uuid: Uuid,
+        gno: u64,
+        last_committed: Option<u64>,
+        sequence_number: Option<u64>,
+        checksum: u32,
+    },
+    RotateEvent {
+        header: EventHeaderV4,
+        position: u64,
+        next_binlog: String,
         checksum: u32,
     },
     PreviousGtidsEvent {
@@ -150,8 +164,10 @@ impl Event {
             EventType::PreviousGtidsEvent => decode_previous_gtids(body_buf, header)?,
             EventType::UnknownEvent => decode_unknown(body_buf, header)?,
             EventType::GtidEvent => decode_gtid(body_buf, header)?,
+            EventType::AnonymousGtidEvent => decode_anonymous_gtid(body_buf, header)?,
             EventType::QueryEvent => decode_query(body_buf, header)?,
             EventType::XidEvent => decode_xid(body_buf, header)?,
+            EventType::RotateEvent => decode_rotate(body_buf, header)?,
             EventType::WriteRowsEventV1
             | EventType::WriteRowsEventV2 =>
                 decode_write_row(body_buf, header, event_type, Some(table_map))?,
