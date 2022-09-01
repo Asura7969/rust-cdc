@@ -1,20 +1,27 @@
+use std::io;
+use std::io::ErrorKind;
 use std::net::SocketAddr;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Encoder, Framed};
-use crate::mysql::MySqlConnection;
+use crate::mysql::{MAX_PACKET_SIZE, MySqlConnection, TableMap};
 use crate::error::Error;
 use crate::mysql::protocol::{Capabilities, Packet};
-use futures::{SinkExt, StreamExt};
+use futures::{FutureExt, TryFutureExt, SinkExt, StreamExt};
+use futures_util::future::ok;
+use futures_util::stream::{SplitSink, SplitStream};
 use crate::err_protocol;
 use crate::mysql::error::MySqlDatabaseError;
 use crate::mysql::protocol::response::ErrPacket;
 use crate::mysql::io::MySqlBufExt;
-use crate::io::{BufExt, Decode};
+use crate::io::{BufExt, Decode, Encode};
+use crate::mysql::collation::{CharSet, Collation};
+use crate::mysql::protocol::connect::{AuthSwitchRequest, AuthSwitchResponse, BinlogFilenameAndPosition, ComBinlogDump, Handshake, HandshakeResponse};
+use crate::mysql::protocol::text::Query;
 
 const MAX_BLOCK_LENGTH: usize = 16777212;
 
-struct MySqlBuilder {
+struct MySqlOption {
     host: String,
     port: u16,
     username: String,
@@ -22,10 +29,11 @@ struct MySqlBuilder {
     database: Option<String>,
     server_id: u32,
     charset: String,
+    collation: Option<String>,
     pipes_as_concat: bool,
 }
 
-impl MySqlBuilder {
+impl MySqlOption {
 
     fn new() -> Self {
         Self {
@@ -40,12 +48,13 @@ impl MySqlBuilder {
             // collation: None,
             // ssl_mode: MySqlSslMode::Preferred,
             // ssl_ca: None,
+            collation: None,
             pipes_as_concat: true,
         }
     }
 
-    fn host(mut self, host: String) -> Self {
-        self.host = host;
+    fn host(mut self, host: &str) -> Self {
+        self.host = host.to_owned();
         self
     }
 
@@ -54,8 +63,8 @@ impl MySqlBuilder {
         self
     }
 
-    fn username(mut self, username: String) -> Self {
-        self.username = username;
+    fn username(mut self, username: &str) -> Self {
+        self.username = username.to_owned();
         self
     }
 
@@ -74,48 +83,29 @@ impl MySqlBuilder {
         self
     }
 
+    pub fn collation(mut self, collation: &str) -> Self {
+        self.collation = Some(collation.to_owned());
+        self
+    }
+
     async fn connect(mut self) -> Result<(), Error> {
         let destination = format!("{}:{}", self.host.clone(), self.port);
         // 参数异常
         let addr: SocketAddr = destination.parse().unwrap();
         let socket = TcpStream::connect(&addr).await?;
 
-
+        let capabilities = get_capabilities(self.database.clone());
         let secure_socket = Framed::new(socket,
-                                        PacketCodec::new(get_capabilities(self.database.clone())));
-        let (mut to_server, mut from_server) = secure_socket.split();
+                                        PacketCodec::new(capabilities.clone()));
+        let (to_server, from_server) = secure_socket.split();
 
-        let mut stream = MyStream { };
-        stream.init();
+        let mut stream = MyStream::new(to_server, from_server, self, capabilities);
+        stream.establish();
+        stream.set_pipes_as_concat().await?;
+
         Ok(())
     }
 
-
-
-
-    // async fn build(&mut self) -> Result<Self, Error> {
-    //     let mut conn = MySqlConnection::establish(
-    //         self.host.as_str(), self.port, self.username.as_str(), self.password.clone(),
-    //         self.database.clone(), self.server_id, self.charset.clone())?;
-    //
-    //     let mut options = String::new();
-    //     if self.pipes_as_concat {
-    //         options.push_str(
-    //             r#"SET sql_mode=(SELECT CONCAT(@@sql_mode, ',PIPES_AS_CONCAT,NO_ENGINE_SUBSTITUTION')),"#);
-    //     } else {
-    //         options.push_str(
-    //             r#"SET sql_mode=(SELECT CONCAT(@@sql_mode, ',NO_ENGINE_SUBSTITUTION')),"#,
-    //         );
-    //     }
-    //     options.push_str(r#"time_zone='+00:00',"#);
-    //     options.push_str(&format!(
-    //         r#"NAMES {} COLLATE {};"#,
-    //         conn.stream.charset.as_str(),
-    //         conn.stream.collation.as_str()
-    //     ));
-    //     unimplemented!()
-    //     // conn.execute(&*options).await?;
-    // }
 }
 
 fn get_capabilities(database: Option<String>) -> Capabilities {
@@ -139,14 +129,222 @@ fn get_capabilities(database: Option<String>) -> Capabilities {
     capabilities
 }
 
-struct MyStream {
-
+pub struct MyStream {
+    to_server: SplitSink<Framed<TcpStream, PacketCodec>, Bytes>,
+    from_server: SplitStream<Framed<TcpStream, PacketCodec>>,
+    option: MySqlOption,
+    pub(crate) capabilities: Capabilities,
+    pub(crate) sequence_id: u8,
+    pub(crate) wbuf: Vec<u8>,
+    pub(crate) server_version: (u16, u16, u16)
 }
 
 
 impl MyStream {
-    fn init(&mut self) {
 
+    fn new(to_server: SplitSink<Framed<TcpStream, PacketCodec>, Bytes>,
+           from_server: SplitStream<Framed<TcpStream, PacketCodec>>,
+           option: MySqlOption,
+           capabilities: Capabilities,) -> Self {
+        Self {
+            to_server,
+            from_server,
+            option,
+            capabilities,
+            sequence_id: 0,
+            wbuf: Vec::with_capacity(1024),
+            server_version: (0, 0, 0)
+        }
+    }
+
+    async fn establish(&mut self) -> Result<(), Error> {
+        match self.next_packet().await {
+            Ok(pk) => {
+                let handshake: Handshake = pk.decode()?;
+
+                let mut plugin = handshake.auth_plugin;
+                let mut nonce = handshake.auth_plugin_data;
+
+                let mut server_version = handshake.server_version.split('.');
+
+                let server_version_major: u16 = server_version
+                    .next()
+                    .unwrap_or_default()
+                    .parse()
+                    .unwrap_or(0);
+
+                let server_version_minor: u16 = server_version
+                    .next()
+                    .unwrap_or_default()
+                    .parse()
+                    .unwrap_or(0);
+
+                let server_version_patch: u16 = server_version
+                    .next()
+                    .unwrap_or_default()
+                    .parse()
+                    .unwrap_or(0);
+
+                self.server_version = (
+                    server_version_major,
+                    server_version_minor,
+                    server_version_patch,
+                );
+
+                self.capabilities &= handshake.server_capabilities;
+                self.capabilities |= Capabilities::PROTOCOL_41;
+
+                self.capabilities.remove(Capabilities::SSL);
+
+                let auth_response = if let (Some(plugin), Some(pwd)) = (plugin, self.option.password.clone()) {
+                    Some(plugin.scramble(self, pwd.as_str(), &nonce).await?)
+                } else {
+                    None
+                };
+                let charset: CharSet = self.option.charset.parse()?;
+                let collation: Collation = charset.default_collation();
+                self.write_packet(HandshakeResponse {
+                    collation: collation as u8,
+                    max_packet_size: MAX_PACKET_SIZE,
+                    username: self.option.username.clone().as_str(),
+                    database: self.option.database.clone().as_deref(),
+                    auth_plugin: plugin,
+                    auth_response: auth_response.as_deref(),
+                }).await;
+
+                loop {
+                    let packet = self.next_packet().await?;
+                    match packet[0] {
+                        0x00 => {
+                            let _ok = packet.ok()?;
+                            break;
+                        }
+
+                        0xfe => {
+                            let switch: AuthSwitchRequest = packet.decode()?;
+
+                            plugin = Some(switch.plugin);
+                            nonce = switch.data.chain(Bytes::new());
+
+                            let response = switch
+                                .plugin
+                                .scramble(
+                                    self,
+                                    self.option.password.clone().as_deref().unwrap_or_default(),
+                                    &nonce,
+                                )
+                                .await?;
+
+                            self.write_packet(AuthSwitchResponse(response)).await;
+                            // stream.flush().await?;
+                        }
+
+                        id => {
+                            if let (Some(plugin), Some(password)) = (plugin, &self.option.password.clone()) {
+                                if plugin.handle(self, packet, password, &nonce).await? {
+                                    // plugin signaled authentication is ok
+                                    break;
+                                }
+
+                            // plugin signaled to continue authentication
+                            } else {
+                                return Err(err_protocol!(
+                                    "unexpected packet 0x{:02x} during authentication",
+                                    id
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                // // todo: fetchBinlogFilenameAndPosition
+                // stream.write_packet(Query("show master status"));
+                // stream.flush().await?;
+                // let packet = stream.recv_packet().await?;
+                // let binlog_fp: BinlogFilenameAndPosition = packet.decode()?;
+                // let pos = binlog_fp.binlog_position;
+                // let file_name = binlog_fp.binlog_filename;
+                //
+                // // todo: fetchBinlogChecksum
+                // // show global variables like 'binlog_checksum'
+                //
+                // // enableHeartbeat
+                //
+                // // send COM_BINLOG_DUMP
+                // stream.write_packet(ComBinlogDump {
+                //     binlog_pos: pos,
+                //     server_id,
+                //     binlog_filename: file_name
+                // });
+                // stream.flush().await?;
+                //
+                // // load snapshort or init new default
+                // let mut table_map = TableMap::default();
+                // loop {
+                //     match next_event(&mut stream, &mut table_map).await {
+                //         Ok(event) => {
+                //             // send event to listener
+                //             unimplemented!()
+                //         },
+                //         Err(error) => {
+                //             // send error to listener
+                //             unimplemented!()
+                //         }
+                //     }
+                // }
+                Ok(())
+            },
+            Err(err) => {
+                Err(err)
+            }
+        }
+    }
+
+    async fn set_pipes_as_concat(&mut self) -> Result<(), Error> {
+        let mut options = BytesMut::new();
+        if self.option.pipes_as_concat {
+            options.put(
+                &b"SET sql_mode=(SELECT CONCAT(@@sql_mode, ',PIPES_AS_CONCAT,NO_ENGINE_SUBSTITUTION')),"[..]);
+        } else {
+            options.put(
+                &b"SET sql_mode=(SELECT CONCAT(@@sql_mode, ',NO_ENGINE_SUBSTITUTION')),"[..],
+            );
+        }
+        options.put(&b"time_zone='+00:00',"[..]);
+        options.put(format!(
+            r#"NAMES {} COLLATE {};"#,
+            self.option.charset.as_str(),
+            self.option.collation.as_ref().unwrap().as_str()
+        ).as_bytes());
+        if let Err(_) = self.to_server.send(options.freeze()).await {
+            return Err(Error::Prepare("set sql modes error".to_owned()))
+        }
+        Ok(())
+        // conn.execute(&*options).await?;
+    }
+
+    pub(crate) async fn next_packet(&mut self) -> Result<Packet<Bytes>, Error> {
+        let (pk, id) = self.from_server.next().await.ok_or(err_protocol!("next packet decode error"))??;
+        self.sequence_id = id;
+        Ok(pk)
+    }
+
+    pub(crate) async fn write_packet<'en, T>(&mut self, payload: T)
+        where
+            T: Encode<'en, Capabilities>,
+    {
+        Packet(payload).encode_with(&mut self.wbuf,
+                                    (self.capabilities, &mut self.sequence_id));
+
+        let bytes = Bytes::from(self.wbuf.to_vec());
+        if let Err(e) = self.to_server.send(bytes).await {
+            println!("send packet error: {:?}", e);
+        }
+        self.wbuf.clear();
+    }
+
+    pub(crate) fn flush(&mut self) {
+        let _ = self.to_server.flush();
     }
 }
 
@@ -160,17 +358,18 @@ struct PacketCodec {
     status: Status,
     packet_size: usize,
     capabilities: Capabilities,
+    sequence_id: u8,
 }
 
 impl PacketCodec {
     fn new(capabilities: Capabilities) -> Self {
-        PacketCodec {status: Status::START, packet_size: 0, capabilities}
+        PacketCodec {status: Status::START, packet_size: 0, capabilities, sequence_id: 0 }
     }
 }
 
 impl Decoder for PacketCodec {
-    type Item = Packet<Bytes>;
-    type Error = Error;
+    type Item = (Packet<Bytes>, u8);
+    type Error = crate::error::Error;
 
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         if self.status == Status::START {
@@ -180,7 +379,7 @@ impl Decoder for PacketCodec {
             let mut header = buf.split_off(4);
             let packet_size = header.get_uint_le(3) as usize;
             let sequence_id = header.get_u8();
-            let _sequence_id = sequence_id.wrapping_add(1);
+            self.sequence_id = sequence_id.wrapping_add(1);
             if buf.remaining() < packet_size {
                 self.status = Status::PACKET;
                 self.packet_size = packet_size;
@@ -217,7 +416,8 @@ impl Decoder for PacketCodec {
         }
         self.packet_size = 0;
         self.status = Status::START;
-        Ok(Some(Packet(payload)))
+        let id = self.sequence_id;
+        Ok(Some((Packet(payload), id)))
     }
 }
 
@@ -228,3 +428,11 @@ impl Encoder<Bytes> for PacketCodec {
         Ok(dst.put(item))
     }
 }
+
+// async fn next_event(stream: &mut MySqlStream, table_map: &mut TableMap) -> Result<MysqlEvent, Error> {
+//     let packet = stream.recv_packet().await?;
+//     let mut bytes = packet.0;
+//     // todo
+//     let (event, _op_buf) = Event::decode(bytes, table_map)?;
+//     Ok(event)
+// }

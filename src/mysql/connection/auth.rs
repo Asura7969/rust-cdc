@@ -9,14 +9,14 @@ use sha2::Sha256;
 use crate::err_protocol;
 
 use crate::error::Error;
-use crate::mysql::connection::stream::MySqlStream;
+use crate::mysql::conn::MyStream;
 use crate::mysql::protocol::auth::AuthPlugin;
 use crate::mysql::protocol::Packet;
 
 impl AuthPlugin {
-    pub(super) async fn scramble(
+    pub(crate) async fn scramble(
         self,
-        stream: &mut MySqlStream,
+        stream: &mut MyStream,
         password: &str,
         nonce: &Chain<Bytes, Bytes>,
     ) -> Result<Vec<u8>, Error> {
@@ -31,9 +31,9 @@ impl AuthPlugin {
         }
     }
 
-    pub(super) async fn handle(
+    pub(crate) async fn handle(
         self,
-        stream: &mut MySqlStream,
+        stream: &mut MyStream,
         packet: Packet<Bytes>,
         password: &str,
         nonce: &Chain<Bytes, Bytes>,
@@ -48,8 +48,8 @@ impl AuthPlugin {
                     0x04 => {
                         let payload = encrypt_rsa(stream, 0x02, password, nonce).await?;
 
-                        stream.write_packet(&*payload);
-                        stream.flush().await?;
+                        stream.write_packet(&*payload).await;
+                        stream.flush();
 
                         Ok(false)
                     }
@@ -125,7 +125,7 @@ fn scramble_sha256(
 }
 
 async fn encrypt_rsa<'s>(
-    stream: &'s mut MySqlStream,
+    stream: &mut MyStream,
     public_key_request_id: u8,
     password: &'s str,
     nonce: &'s Chain<Bytes, Bytes>,
@@ -138,11 +138,11 @@ async fn encrypt_rsa<'s>(
     // }
 
     // client sends a public key request
-    stream.write_packet(&[public_key_request_id][..]);
-    stream.flush().await?;
+    stream.write_packet(&[public_key_request_id][..]).await;
+    stream.flush();
 
     // server sends a public key response
-    let packet = stream.recv_packet().await?;
+    let packet = stream.next_packet().await?;
     let rsa_pub_key = &packet[1..];
 
     // xor the password with the given nonce

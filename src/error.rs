@@ -85,6 +85,9 @@ pub enum Error {
     #[error("attempted to communicate with a crashed background worker")]
     WorkerCrashed,
 
+    #[error("connect error")]
+    Prepare(String),
+
 }
 
 impl StdError for Box<dyn DatabaseError> {}
@@ -191,6 +194,11 @@ impl From<uuid::Error> for Error {
     }
 }
 
+impl From<std::fmt::Error> for Error {
+    fn from(error: std::fmt::Error) -> Self {
+        Error::Protocol(error.to_string())
+    }
+}
 
 impl Error {
 

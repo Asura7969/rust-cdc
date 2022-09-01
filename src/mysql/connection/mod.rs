@@ -12,14 +12,13 @@ use futures_util::FutureExt;
 use std::fmt::{self, Debug, Formatter};
 use tokio::io::AsyncWriteExt;
 
-mod establish;
 mod stream;
 mod auth;
 
 pub(crate) use stream::{MySqlStream, Waiting};
 use crate::mysql::event::{ColTypes};
 
-const MAX_PACKET_SIZE: u32 = 1024;
+pub(crate) const MAX_PACKET_SIZE: u32 = 1024;
 
 /// A connection to a MySQL database.
 pub struct MySqlConnection {
