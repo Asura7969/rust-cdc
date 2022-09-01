@@ -26,6 +26,8 @@ pub(crate) fn replace_note(old_str: String) -> String {
     cow.to_string()
 }
 
+unsafe impl Send for MysqlEvent {}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum MysqlEvent {
     // https://dev.mysql.com/doc/internals/en/format-description-event.html

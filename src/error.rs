@@ -6,6 +6,7 @@ use std::error::Error as StdError;
 use std::fmt::Display;
 use std::io;
 use std::result::Result as StdResult;
+use tokio::sync::broadcast::error::RecvError;
 
 // use crate::database::Database;
 // use crate::type_info::TypeInfo;
@@ -87,6 +88,9 @@ pub enum Error {
 
     #[error("connect error")]
     Prepare(String),
+
+    #[error("runtime error")]
+    RuntimeErr(RecvError)
 
 }
 
@@ -197,6 +201,12 @@ impl From<uuid::Error> for Error {
 impl From<std::fmt::Error> for Error {
     fn from(error: std::fmt::Error) -> Self {
         Error::Protocol(error.to_string())
+    }
+}
+
+impl From<RecvError> for Error {
+    fn from(error: RecvError) -> Self {
+        Error::RuntimeErr(error)
     }
 }
 
