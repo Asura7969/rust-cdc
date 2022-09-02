@@ -10,8 +10,6 @@ use crate::mysql::protocol::{Capabilities, Packet};
 use futures::{FutureExt, TryFutureExt, SinkExt, StreamExt};
 use futures_util::future::ok;
 use futures_util::stream::{SplitSink, SplitStream};
-use tokio::sync::broadcast;
-use tokio::sync::broadcast::{Sender, Receiver};
 use crate::err_protocol;
 use crate::mysql::error::MySqlDatabaseError;
 use crate::mysql::protocol::response::ErrPacket;
@@ -107,7 +105,7 @@ impl MySqlOption {
 
         // todo: load snapshort or init new default
 
-        stream.notify_listener().await;
+        // stream.notify_listener().await;
 
         Ok(())
     }
@@ -138,16 +136,24 @@ fn get_capabilities(database: Option<String>) -> Capabilities {
 
 pub struct Listener {
     fn_read: Box<dyn FnMut(MysqlEvent)>,
-    fn_err: Box<dyn FnMut(Box<dyn DatabaseError>)>,
+    fn_err: Box<dyn FnMut(Error)>,
 }
 
 impl Listener {
-
     fn new(fn_read: Box<dyn FnMut(MysqlEvent)>,
-           fn_err: Box<dyn FnMut(Box<dyn DatabaseError>)>,) -> Self {
+           fn_err: Box<dyn FnMut(Error)>,) -> Self {
         Self { fn_read, fn_err }
     }
+}
 
+impl Default for Listener {
+    fn default() -> Self {
+        Self { fn_read: Box::new(|event| {
+            println!("event: {:?}", event);
+        }), fn_err: Box::new(|err| {
+            eprintln!("err: {:?}", err);
+        }) }
+    }
 }
 
 pub struct MyStream {
@@ -159,9 +165,7 @@ pub struct MyStream {
     pub(crate) wbuf: Vec<u8>,
     pub(crate) server_version: (u16, u16, u16),
     table_map: TableMap,
-    listeners: Vec<(Listener, Receiver<MysqlEvent>)>,
-    sender: Sender<MysqlEvent>,
-    receiver: Receiver<MysqlEvent>,
+    listener: Listener,
 }
 
 
@@ -171,7 +175,6 @@ impl MyStream {
            from_server: SplitStream<Framed<TcpStream, PacketCodec>>,
            option: MySqlOption,
            capabilities: Capabilities,) -> Self {
-        let (sender, receiver) = broadcast::channel(16);
         Self {
             to_server,
             from_server,
@@ -181,47 +184,34 @@ impl MyStream {
             wbuf: Vec::with_capacity(1024),
             server_version: (0, 0, 0),
             table_map: TableMap::default(),
-            listeners: Vec::new(),
-            sender,
-            receiver
+            listener: Listener::default(),
         }
     }
 
     fn register_listener(&mut self, listener: Listener) {
-        self.listeners.push((listener, self.sender.subscribe()));
+        self.listener = listener;
     }
 
-    async fn notify_listener(&mut self) {
-
-        let (tx, mut rx1) = broadcast::channel(100);
-        for (mut listener, mut re) in self.listeners {
-            tokio::spawn(async move {
-                loop {
-                    match re.recv().await {
-                        Ok(msg) => (listener.fn_read)(msg),
-                        Err(err) => {
-                            // let error = MySqlDatabaseError(ErrPacket { error_code: 1, sql_state: None, error_message: err.to_string() });
-                            // (listener.fn_err)(Box::new(error))
-                        },
-                    }
-                }
-            });
-        }
-
+    pub async fn start(&mut self) {
         loop {
-            match next_event(self, &mut self.table_map).await {
+            match self.next_event().await {
                 Ok(event) => {
                     // send event to listener
-                    tx.send(event).unwrap();
+                    (self.listener.fn_read)(event)
                 },
                 Err(error) => {
-                    for (mut listener, _) in self.listeners {
-                        // let error = MySqlDatabaseError(ErrPacket { error_code: 1, sql_state: None, error_message: "".to_string() });
-                        // (listener.fn_err)(Box::new(error))
-                    }
+                    (self.listener.fn_err)(error)
                 }
             }
         }
+    }
+
+    async fn next_event(&mut self) -> Result<MysqlEvent, Error> {
+        let packet = self.next_packet().await?;
+        let mut bytes = packet.0;
+        // todo
+        let (event, _) = Event::decode(bytes, &mut self.table_map)?;
+        Ok(event)
     }
 
     async fn set_binlog_pos(&mut self) -> Result<(), Error> {
@@ -483,10 +473,4 @@ impl Encoder<Bytes> for PacketCodec {
     }
 }
 
-async fn next_event(stream: &mut MyStream, table_map: &mut TableMap) -> Result<MysqlEvent, Error> {
-    let packet = stream.next_packet().await?;
-    let mut bytes = packet.0;
-    // todo
-    let (event, _) = Event::decode(bytes, table_map)?;
-    Ok(event)
-}
+
