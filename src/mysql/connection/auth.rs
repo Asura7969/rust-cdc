@@ -49,7 +49,7 @@ impl AuthPlugin {
                         let payload = encrypt_rsa(stream, 0x02, password, nonce).await?;
 
                         stream.write_packet(&*payload).await;
-                        stream.flush();
+                        // stream.flush();
 
                         Ok(false)
                     }
@@ -139,7 +139,7 @@ async fn encrypt_rsa<'s>(
 
     // client sends a public key request
     stream.write_packet(&[public_key_request_id][..]).await;
-    stream.flush();
+    // stream.flush();
 
     // server sends a public key response
     let packet = stream.next_packet().await?;

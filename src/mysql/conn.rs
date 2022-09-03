@@ -8,16 +8,17 @@ use crate::mysql::{Event, MAX_PACKET_SIZE, MySqlConnection, MysqlEvent, TableMap
 use crate::error::{DatabaseError, Error};
 use crate::mysql::protocol::{Capabilities, Packet};
 use futures::{FutureExt, TryFutureExt, SinkExt, StreamExt};
+use futures_core::future::BoxFuture;
 use futures_util::future::ok;
 use futures_util::stream::{SplitSink, SplitStream};
 use crate::err_protocol;
 use crate::mysql::error::MySqlDatabaseError;
-use crate::mysql::protocol::response::ErrPacket;
+use crate::mysql::protocol::response::{ErrPacket, OkPacket};
 use crate::mysql::io::MySqlBufExt;
 use crate::io::{BufExt, Decode, Encode};
 use crate::mysql::collation::{CharSet, Collation};
 use crate::mysql::protocol::connect::{AuthSwitchRequest, AuthSwitchResponse, BinlogFilenameAndPosition, ComBinlogDump, Handshake, HandshakeResponse};
-use crate::mysql::protocol::text::Query;
+use crate::mysql::protocol::text::{Ping, Query};
 
 const MAX_BLOCK_LENGTH: usize = 16777212;
 
@@ -102,6 +103,8 @@ impl MySqlOption {
         let mut stream = MyStream::new(to_server, from_server, self, capabilities);
         stream.establish();
         stream.set_pipes_as_concat().await?;
+
+        stream.set_checksum().await?;
 
         // todo: load snapshort or init new default
 
@@ -206,6 +209,24 @@ impl MyStream {
         }
     }
 
+    pub(crate) async fn set_checksum(&mut self) -> Result<(), Error> {
+        self.ping().await?;
+        let mut command = String::new();
+        command.push_str("set @master_binlog_checksum= @@global.binlog_checksum");
+        self.write_packet(Query(command.as_str())).await;
+        Ok(())
+    }
+
+    pub async fn ping(&mut self) -> Result<(), Error> {
+        self.write_packet(Ping).await;
+        self.recv_ok().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn recv_ok(&mut self) -> Result<OkPacket, Error> {
+        self.next_packet().await?.ok()
+    }
+
     async fn next_event(&mut self) -> Result<MysqlEvent, Error> {
         let packet = self.next_packet().await?;
         let mut bytes = packet.0;
@@ -214,10 +235,10 @@ impl MyStream {
         Ok(event)
     }
 
-    async fn set_binlog_pos(&mut self) -> Result<(), Error> {
+    pub(crate) async fn set_binlog_pos(&mut self) -> Result<(), Error> {
         // todo: fetchBinlogFilenameAndPosition
         self.write_packet(Query("show master status")).await;
-        // stream.flush().await?;
+        // self.flush().await?;
         let binlog_fp: BinlogFilenameAndPosition = self.next_packet().await?.decode()?;
         let pos = binlog_fp.binlog_position;
         let file_name = binlog_fp.binlog_filename;
@@ -345,24 +366,21 @@ impl MyStream {
     }
 
     async fn set_pipes_as_concat(&mut self) -> Result<(), Error> {
-        let mut options = BytesMut::new();
+        let mut command = String::new();
         if self.option.pipes_as_concat {
-            options.put(
-                &b"SET sql_mode=(SELECT CONCAT(@@sql_mode, ',PIPES_AS_CONCAT,NO_ENGINE_SUBSTITUTION')),"[..]);
+            command.push_str(r#"SET sql_mode=(SELECT CONCAT(@@sql_mode, ',PIPES_AS_CONCAT,NO_ENGINE_SUBSTITUTION')),"#);
         } else {
-            options.put(
-                &b"SET sql_mode=(SELECT CONCAT(@@sql_mode, ',NO_ENGINE_SUBSTITUTION')),"[..],
+            command.push_str(
+                r#"SET sql_mode=(SELECT CONCAT(@@sql_mode, ',NO_ENGINE_SUBSTITUTION')),"#,
             );
         }
-        options.put(&b"time_zone='+00:00',"[..]);
-        options.put(format!(
+        command.push_str(r#"time_zone='+00:00',"#);
+        command.push_str(&format!(
             r#"NAMES {} COLLATE {};"#,
             self.option.charset.as_str(),
             self.option.collation.as_ref().unwrap().as_str()
-        ).as_bytes());
-        if let Err(_) = self.to_server.send(options.freeze()).await {
-            return Err(Error::Prepare("set sql modes error".to_owned()))
-        }
+        ));
+        self.write_packet(Query(command.as_str())).await;
         Ok(())
         // conn.execute(&*options).await?;
     }
@@ -377,6 +395,8 @@ impl MyStream {
         where
             T: Encode<'en, Capabilities>,
     {
+        // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_command_phase.html
+        self.sequence_id = 0;
         Packet(payload).encode_with(&mut self.wbuf,
                                     (self.capabilities, &mut self.sequence_id));
 
