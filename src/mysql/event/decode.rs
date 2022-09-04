@@ -1,11 +1,10 @@
-use std::any::Any;
 use bit_set::BitSet;
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, Bytes};
 use uuid::Uuid;
 use serde::Serialize;
 use crate::err_parse;
 use crate::error::Error;
-use crate::io::{BufExt, Decode};
+use crate::io::BufExt;
 use crate::mysql::event::{EventType, ColTypes};
 use crate::mysql::{
     ColValues,

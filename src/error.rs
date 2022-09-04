@@ -1,6 +1,5 @@
 //! Types for working with errors produced by SQLx.
 
-use std::any::type_name;
 use std::borrow::Cow;
 use std::error::Error as StdError;
 use std::fmt::Display;

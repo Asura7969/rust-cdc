@@ -1,5 +1,4 @@
 use std::str::from_utf8;
-use bit_set::BitSet;
 
 use bytes::{Buf, Bytes};
 use memchr::memchr;

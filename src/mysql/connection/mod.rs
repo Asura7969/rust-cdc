@@ -15,7 +15,7 @@ use tokio::io::AsyncWriteExt;
 mod stream;
 mod auth;
 
-pub(crate) use stream::{MySqlStream, Waiting};
+pub(crate) use stream::{MySqlStream};
 use crate::mysql::event::{ColTypes};
 
 pub(crate) const MAX_PACKET_SIZE: u32 = 1024;

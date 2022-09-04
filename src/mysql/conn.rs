@@ -1,28 +1,24 @@
-use std::io;
-use std::io::ErrorKind;
 use std::net::SocketAddr;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Encoder, Framed};
-use crate::mysql::{Event, MAX_PACKET_SIZE, MySqlConnection, MysqlEvent, TableMap};
-use crate::error::{DatabaseError, Error};
+use crate::mysql::{Event, MAX_PACKET_SIZE, MysqlEvent, TableMap};
+use crate::error::Error;
 use crate::mysql::protocol::{Capabilities, Packet};
-use futures::{FutureExt, TryFutureExt, SinkExt, StreamExt};
-use futures_core::future::BoxFuture;
-use futures_util::future::ok;
+use futures::{SinkExt, StreamExt};
 use futures_util::stream::{SplitSink, SplitStream};
+use tokio::io::{AsyncRead, AsyncWrite};
 use crate::err_protocol;
 use crate::mysql::error::MySqlDatabaseError;
 use crate::mysql::protocol::response::{ErrPacket, OkPacket};
-use crate::mysql::io::MySqlBufExt;
-use crate::io::{BufExt, Decode, Encode};
+use crate::io::{Decode, Encode};
 use crate::mysql::collation::{CharSet, Collation};
 use crate::mysql::protocol::connect::{AuthSwitchRequest, AuthSwitchResponse, BinlogFilenameAndPosition, ComBinlogDump, Handshake, HandshakeResponse};
 use crate::mysql::protocol::text::{Ping, Query};
 
 const MAX_BLOCK_LENGTH: usize = 16777212;
 
-struct MySqlOption {
+pub struct MySqlOption {
     host: String,
     port: u16,
     username: String,
@@ -36,7 +32,7 @@ struct MySqlOption {
 
 impl MySqlOption {
 
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             port: 3306,
             host: String::from("localhost"),
@@ -54,32 +50,32 @@ impl MySqlOption {
         }
     }
 
-    fn host(mut self, host: &str) -> Self {
+    pub fn host(mut self, host: &str) -> Self {
         self.host = host.to_owned();
         self
     }
 
-    fn port(mut self, port: u16) -> Self {
+    pub fn port(mut self, port: u16) -> Self {
         self.port = port;
         self
     }
 
-    fn username(mut self, username: &str) -> Self {
+    pub fn username(mut self, username: &str) -> Self {
         self.username = username.to_owned();
         self
     }
 
-    fn password(mut self, password: Option<String>) -> Self {
+    pub fn password(mut self, password: Option<String>) -> Self {
         self.password = password;
         self
     }
 
-    fn database(mut self, database: Option<String>) -> Self {
+    pub fn database(mut self, database: Option<String>) -> Self {
         self.database = database;
         self
     }
 
-    fn server_id(mut self, server_id: u32) -> Self {
+    pub fn server_id(mut self, server_id: u32) -> Self {
         self.server_id = server_id;
         self
     }
@@ -89,8 +85,14 @@ impl MySqlOption {
         self
     }
 
-    async fn connect(mut self) -> Result<(), Error> {
+    pub fn charset(mut self, charset: &str) -> Self {
+        self.charset = charset.to_owned();
+        self
+    }
+
+    pub async fn connect(mut self) -> Result<MyStream, Error> {
         let destination = format!("{}:{}", self.host.clone(), self.port);
+        println!("目标地址: {}", destination);
         // 参数异常
         let addr: SocketAddr = destination.parse().unwrap();
         let socket = TcpStream::connect(&addr).await?;
@@ -101,16 +103,16 @@ impl MySqlOption {
         let (to_server, from_server) = secure_socket.split();
 
         let mut stream = MyStream::new(to_server, from_server, self, capabilities);
-        stream.establish();
+        stream.establish().await?;
         stream.set_pipes_as_concat().await?;
-
+        stream.ping().await?;
         stream.set_checksum().await?;
-
+        stream.set_binlog_pos().await?;
         // todo: load snapshort or init new default
 
         // stream.notify_listener().await;
 
-        Ok(())
+        Ok(stream)
     }
 
 }
@@ -143,7 +145,7 @@ pub struct Listener {
 }
 
 impl Listener {
-    fn new(fn_read: Box<dyn FnMut(MysqlEvent)>,
+    pub fn new(fn_read: Box<dyn FnMut(MysqlEvent)>,
            fn_err: Box<dyn FnMut(Error)>,) -> Self {
         Self { fn_read, fn_err }
     }
@@ -191,7 +193,7 @@ impl MyStream {
         }
     }
 
-    fn register_listener(&mut self, listener: Listener) {
+    pub fn register_listener(&mut self, listener: Listener) {
         self.listener = listener;
     }
 
@@ -213,12 +215,12 @@ impl MyStream {
         self.ping().await?;
         let mut command = String::new();
         command.push_str("set @master_binlog_checksum= @@global.binlog_checksum");
-        self.write_packet(Query(command.as_str())).await;
+        self.send_packet(Query(command.as_str())).await;
         Ok(())
     }
 
     pub async fn ping(&mut self) -> Result<(), Error> {
-        self.write_packet(Ping).await;
+        self.send_packet(Ping).await;
         self.recv_ok().await?;
         Ok(())
     }
@@ -229,15 +231,16 @@ impl MyStream {
 
     async fn next_event(&mut self) -> Result<MysqlEvent, Error> {
         let packet = self.next_packet().await?;
-        let mut bytes = packet.0;
+        let bytes = packet.0;
         // todo
         let (event, _) = Event::decode(bytes, &mut self.table_map)?;
         Ok(event)
     }
 
     pub(crate) async fn set_binlog_pos(&mut self) -> Result<(), Error> {
+
         // todo: fetchBinlogFilenameAndPosition
-        self.write_packet(Query("show master status")).await;
+        self.send_packet(Query("show master status")).await;
         // self.flush().await?;
         let binlog_fp: BinlogFilenameAndPosition = self.next_packet().await?.decode()?;
         let pos = binlog_fp.binlog_position;
@@ -249,7 +252,7 @@ impl MyStream {
         // enableHeartbeat
 
         // send COM_BINLOG_DUMP
-        self.write_packet(ComBinlogDump {
+        self.send_packet(ComBinlogDump {
             binlog_pos: pos,
             server_id: self.option.server_id,
             binlog_filename: file_name
@@ -374,21 +377,37 @@ impl MyStream {
                 r#"SET sql_mode=(SELECT CONCAT(@@sql_mode, ',NO_ENGINE_SUBSTITUTION')),"#,
             );
         }
+
+        let charset: CharSet = self.option.charset.parse()?;
+        let collation: Collation = self.option.collation
+            .as_deref()
+            .map(|collation| collation.parse())
+            .transpose()?
+            .unwrap_or_else(|| charset.default_collation());
         command.push_str(r#"time_zone='+00:00',"#);
         command.push_str(&format!(
             r#"NAMES {} COLLATE {};"#,
-            self.option.charset.as_str(),
-            self.option.collation.as_ref().unwrap().as_str()
+            charset.as_str(),
+            collation.as_str()
         ));
-        self.write_packet(Query(command.as_str())).await;
+        self.send_packet(Query(command.as_str())).await;
         Ok(())
         // conn.execute(&*options).await?;
     }
 
     pub(crate) async fn next_packet(&mut self) -> Result<Packet<Bytes>, Error> {
-        let (pk, id) = self.from_server.next().await.ok_or(err_protocol!("next packet decode error"))??;
+        // let (pk, id) = self.from_server.next().await.ok_or(err_protocol!("next packet decode error"))??;
+        let (pk, id) = self.from_server.next().await.unwrap()?;
         self.sequence_id = id;
         Ok(pk)
+    }
+
+    pub(crate) async fn send_packet<'en, T>(&mut self, payload: T)
+        where
+            T: Encode<'en, Capabilities>,
+    {
+        self.sequence_id = 0;
+        self.write_packet(payload).await
     }
 
     pub(crate) async fn write_packet<'en, T>(&mut self, payload: T)
@@ -396,7 +415,6 @@ impl MyStream {
             T: Encode<'en, Capabilities>,
     {
         // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_command_phase.html
-        self.sequence_id = 0;
         Packet(payload).encode_with(&mut self.wbuf,
                                     (self.capabilities, &mut self.sequence_id));
 
@@ -435,14 +453,17 @@ impl Decoder for PacketCodec {
     type Item = (Packet<Bytes>, u8);
     type Error = crate::error::Error;
 
+
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         if self.status == Status::START {
             if buf.len() < 4 {
                 return Ok(None);
             }
-            let mut header = buf.split_off(4);
+            let mut header = buf.split_to(4);
+
             let packet_size = header.get_uint_le(3) as usize;
             let sequence_id = header.get_u8();
+
             self.sequence_id = sequence_id.wrapping_add(1);
             if buf.remaining() < packet_size {
                 self.status = Status::PACKET;
@@ -453,8 +474,8 @@ impl Decoder for PacketCodec {
             return Ok(None);
         }
 
-        let payload = buf.split_off(self.packet_size).freeze();
-
+        // let payload = buf.split_off(self.packet_size).freeze();
+        let payload = buf.split().freeze();
         // TODO: packet compression
         // TODO: packet joining
 

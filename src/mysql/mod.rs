@@ -12,3 +12,4 @@ mod value;
 
 pub use event::*;
 pub use connection::*;
+pub use conn::*;

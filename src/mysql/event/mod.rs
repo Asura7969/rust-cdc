@@ -2,22 +2,16 @@ mod decode;
 
 pub use decode::ChecksumType;
 use serde::Serialize;
-use std::any::Any;
-use std::borrow::Borrow;
-use std::marker::PhantomData;
-use std::sync::Arc;
 use bit_set::BitSet;
-use byteorder::{ByteOrder, LittleEndian};
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, Bytes};
 use regex::Regex;
 use uuid::Uuid;
-use crate::{err_parse, err_protocol};
+use crate::err_protocol;
 use crate::error::Error;
 use crate::io::{BufExt, Decode};
-use crate::mysql::connection::{SingleTableMap, TableMap};
+use crate::mysql::connection::TableMap;
 use crate::mysql::event::decode::*;
 use crate::mysql::io::MySqlBufExt;
-use crate::mysql::value::MySQLValue;
 
 pub(crate) const R_STR:&str = r"(/\*)(.*)(\*/)(\s)*";
 
