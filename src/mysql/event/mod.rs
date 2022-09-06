@@ -1,6 +1,8 @@
 mod decode;
 
 pub use decode::ChecksumType;
+pub(crate) use decode::ColumnDefinition;
+pub(crate) use decode::decode_column_def;
 use serde::Serialize;
 use bit_set::BitSet;
 use bytes::{Buf, Bytes};

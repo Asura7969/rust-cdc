@@ -1,3 +1,4 @@
+use std::str::from_utf8;
 use bit_set::BitSet;
 use bytes::{Buf, Bytes};
 use uuid::Uuid;
@@ -17,6 +18,64 @@ use crate::mysql::{
     TableMap,
     replace_note};
 use crate::mysql::io::MySqlBufExt;
+
+
+#[derive(Debug, Clone)]
+pub(crate) struct ColumnDefinition {
+    catalog: Bytes,
+    schema: Bytes,
+    table_alias: Bytes,
+    table: Bytes,
+    alias: Bytes,
+    name: Bytes,
+    pub(crate) char_set: u16,
+    pub(crate) max_size: u32,
+    pub(crate) r#type: ColTypes,
+    // pub(crate) flags: ColumnFlags,
+    decimals: u8,
+}
+
+impl ColumnDefinition {
+    // NOTE: strings in-protocol are transmitted according to the client character set
+    //       as this is UTF-8, all these strings should be UTF-8
+
+    pub(crate) fn name(&self) -> Result<&str, Error> {
+        from_utf8(&self.name).map_err(Error::protocol)
+    }
+
+    pub(crate) fn alias(&self) -> Result<&str, Error> {
+        from_utf8(&self.alias).map_err(Error::protocol)
+    }
+}
+
+pub(crate) fn decode_column_def(mut buf: Bytes,) -> Result<(ColumnDefinition, Option<Bytes>), Error>{
+    let catalog = buf.get_bytes_lenenc();
+    let schema = buf.get_bytes_lenenc();
+    let table_alias = buf.get_bytes_lenenc();
+    let table = buf.get_bytes_lenenc();
+    let alias = buf.get_bytes_lenenc();
+    let name = buf.get_bytes_lenenc();
+    let _next_len = buf.get_uint_lenenc(); // always 0x0c
+    let char_set = buf.get_u16_le();
+    let max_size = buf.get_u32_le();
+    let type_id = buf.get_u8();
+    let _flags = buf.get_u16_le();
+    let decimals = buf.get_u8();
+
+    Ok((ColumnDefinition {
+        catalog,
+        schema,
+        table_alias,
+        table,
+        alias,
+        name,
+        char_set,
+        max_size,
+        r#type: ColTypes::by_code(type_id),
+        // flags: ColumnFlags::from_bits_truncate(flags),
+        decimals,
+    }, has_buf(buf)))
+}
 
 pub(crate) fn decode_delete_row(mut buf: Bytes,
                                 header: EventHeaderV4,

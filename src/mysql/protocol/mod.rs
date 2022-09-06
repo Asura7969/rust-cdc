@@ -3,6 +3,7 @@ mod capabilities;
 pub(crate) mod connect;
 mod packet;
 pub(crate) mod response;
+pub(crate) mod row;
 
 pub(crate) use capabilities::Capabilities;
 pub(crate) use packet::Packet;

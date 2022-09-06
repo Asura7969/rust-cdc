@@ -4,7 +4,9 @@ use std::borrow::Cow;
 use std::error::Error as StdError;
 use std::fmt::Display;
 use std::io;
+use std::num::ParseIntError;
 use std::result::Result as StdResult;
+use std::str::Utf8Error;
 use tokio::sync::broadcast::error::RecvError;
 
 // use crate::database::Database;
@@ -89,7 +91,7 @@ pub enum Error {
     Prepare(String),
 
     #[error("runtime error")]
-    RuntimeErr(RecvError)
+    RuntimeErr(Utf8Error)
 
 }
 
@@ -203,9 +205,15 @@ impl From<std::fmt::Error> for Error {
     }
 }
 
-impl From<RecvError> for Error {
-    fn from(error: RecvError) -> Self {
+impl From<Utf8Error> for Error {
+    fn from(error: Utf8Error) -> Self {
         Error::RuntimeErr(error)
+    }
+}
+
+impl From<ParseIntError> for Error {
+    fn from(error: ParseIntError) -> Self {
+        Error::parse(error)
     }
 }
 

@@ -1,19 +1,26 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::str::from_utf8;
+use std::sync::Arc;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Encoder, Framed};
-use crate::mysql::{Event, MAX_PACKET_SIZE, MysqlEvent, TableMap};
+use crate::mysql::{ColumnDefinition, decode_column_def, Event, MAX_PACKET_SIZE, MysqlEvent, TableMap};
 use crate::error::Error;
 use crate::mysql::protocol::{Capabilities, Packet};
+use crate::mysql::protocol::response::{EofPacket, Status as crate_Status};
+use crate::mysql::io::MySqlBufExt;
+
 use futures::{SinkExt, StreamExt};
 use futures_util::stream::{SplitSink, SplitStream};
 use tokio::io::{AsyncRead, AsyncWrite};
-use crate::err_protocol;
+use crate::{err_parse, err_protocol};
 use crate::mysql::error::MySqlDatabaseError;
 use crate::mysql::protocol::response::{ErrPacket, OkPacket};
-use crate::io::{Decode, Encode};
+use crate::io::{BufExt, Decode, Encode};
 use crate::mysql::collation::{CharSet, Collation};
 use crate::mysql::protocol::connect::{AuthSwitchRequest, AuthSwitchResponse, BinlogFilenameAndPosition, ComBinlogDump, Handshake, HandshakeResponse};
+use crate::mysql::protocol::row::Row;
 use crate::mysql::protocol::text::{Ping, Query};
 
 const MAX_BLOCK_LENGTH: usize = 16777212;
@@ -232,33 +239,92 @@ impl MyStream {
     async fn next_event(&mut self) -> Result<MysqlEvent, Error> {
         let packet = self.next_packet().await?;
         let bytes = packet.0;
-        // todo
+        println!("next_event bytes: {:?}", bytes.clone().to_vec());
         let (event, _) = Event::decode(bytes, &mut self.table_map)?;
         Ok(event)
     }
 
     pub(crate) async fn set_binlog_pos(&mut self) -> Result<(), Error> {
+        let _ = self.next_packet().await?.ok();
+        let _ = self.next_packet().await?.ok();
 
         // todo: fetchBinlogFilenameAndPosition
         self.send_packet(Query("show master status")).await;
         // self.flush().await?;
-        let binlog_fp: BinlogFilenameAndPosition = self.next_packet().await?.decode()?;
-        let pos = binlog_fp.binlog_position;
-        let file_name = binlog_fp.binlog_filename;
 
-        // todo: fetchBinlogChecksum
-        // show global variables like 'binlog_checksum'
+        match self.fetch().await? {
+            Some(row) => {
+                let file_name_bytes = row.get(0).expect("binlog file name parse error");
+                let file_name = from_utf8(file_name_bytes)?;
+                println!("file_name: {}", file_name.clone());
 
-        // enableHeartbeat
+                let mut pos_bytes = Bytes::from(row.get(1)
+                    .expect("binlog pos parse error")
+                    .to_vec());
+                let pos_len = pos_bytes.len();
+                let pos: u32 = pos_bytes.get_str(pos_len)?.parse()?;
+                let gtid_set = from_utf8(&row.get(4).expect("_gtid_set parse error"))?;
 
-        // send COM_BINLOG_DUMP
-        self.send_packet(ComBinlogDump {
-            binlog_pos: pos,
-            server_id: self.option.server_id,
-            binlog_filename: file_name
-        }).await;
-        // stream.flush().await?;
-        Ok(())
+                println!("pos: {}", pos);
+                println!("gtid_set: {}", gtid_set);
+                // todo: fetchBinlogChecksum
+                // show global variables like 'binlog_checksum'
+
+                // enableHeartbeat
+
+                println!("send COM_BINLOG_DUMP");
+                // send COM_BINLOG_DUMP
+                self.send_packet(ComBinlogDump {
+                    binlog_pos: pos,
+                    server_id: self.option.server_id,
+                    binlog_filename: file_name.to_string()
+                }).await;
+
+                // stream.flush().await?;
+                return Ok(())
+            },
+            None => return Err(err_parse!("fetch latest binlog info failed!"))
+        }
+
+    }
+
+    async fn fetch(&mut self) -> Result<Option<Row>, Error> {
+        let mut columns = Arc::new(Vec::new());
+        loop {
+            let mut packet = self.next_packet().await?;
+            if packet[0] == 0x00 || packet[0] == 0xff {
+                let ok = packet.ok()?;
+
+                if ok.status.contains(crate_Status::SERVER_MORE_RESULTS_EXISTS) {
+                    // more result sets exist, continue to the next one
+                    continue;
+                }
+                return Ok(None);
+            }
+
+            let num_columns = packet.get_uint_lenenc() as usize; // column count
+
+            let _column_names = Arc::new(recv_result_metadata(self, num_columns, Arc::make_mut(&mut columns)).await?);
+
+            loop {
+                let packet = self.next_packet().await?;
+
+                if packet[0] == 0xfe && packet.len() < 9 {
+                    let eof = packet.eof(self.capabilities)?;
+
+                    if eof.status.contains(crate_Status::SERVER_MORE_RESULTS_EXISTS) {
+                        // more result sets exist, continue to the next one
+                        // self.stream.busy = Busy::Result;
+                        break;
+                    }
+                    return Ok(None);
+                }
+
+                let row = Row::decode_row(packet.0, &columns)?;
+
+                return Ok(Some(row))
+            }
+        }
     }
 
     async fn establish(&mut self) -> Result<(), Error> {
@@ -410,6 +476,21 @@ impl MyStream {
         self.write_packet(payload).await
     }
 
+    pub(crate) async fn maybe_recv_eof(&mut self) -> Result<Option<EofPacket>, Error> {
+        if self.capabilities.contains(Capabilities::DEPRECATE_EOF) {
+            Ok(None)
+        } else {
+            self.recv().await.map(Some)
+        }
+    }
+
+    pub(crate) async fn recv<'de, T>(&mut self) -> Result<T, Error>
+        where
+            T: Decode<'de, Capabilities>,
+    {
+        self.next_packet().await?.decode_with(self.capabilities)
+    }
+
     pub(crate) async fn write_packet<'en, T>(&mut self, payload: T)
         where
             T: Encode<'en, Capabilities>,
@@ -428,6 +509,52 @@ impl MyStream {
     pub(crate) fn flush(&mut self) {
         let _ = self.to_server.flush();
     }
+}
+fn recv_next_result_column(def: &ColumnDefinition, ordinal: usize) -> Result<String, Error> {
+    // if the alias is empty, use the alias
+    // only then use the name
+    let name = match (def.name()?, def.alias()?) {
+        (_, alias) if !alias.is_empty() => alias.to_owned(),
+        (name, _) => name.to_owned(),
+    };
+
+    // let type_info = MySqlTypeInfo::from_column(&def);
+    //
+    // Ok(MySqlColumn {
+    //     name,
+    //     type_info,
+    //     ordinal,
+    //     flags: Some(def.flags),
+    // })
+    Ok(name)
+}
+
+async fn recv_result_metadata(
+    stream: &mut MyStream,
+    num_columns: usize,
+    columns: &mut Vec<ColumnDefinition>,
+) -> Result<HashMap<String, usize>, Error> {
+    // the result-set metadata is primarily a listing of each output
+    // column in the result-set
+
+    let mut column_names = HashMap::with_capacity(num_columns);
+
+    columns.clear();
+    columns.reserve(num_columns);
+
+    for ordinal in 0..num_columns {
+        let mut pkg = stream.next_packet().await?;
+        let (def, _) = decode_column_def(pkg.0)?;
+
+        let column = recv_next_result_column(&def, ordinal)?;
+
+        column_names.insert(column.clone(), ordinal);
+        columns.push(def);
+    }
+
+    stream.maybe_recv_eof().await?;
+
+    Ok(column_names)
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -465,17 +592,17 @@ impl Decoder for PacketCodec {
             let sequence_id = header.get_u8();
 
             self.sequence_id = sequence_id.wrapping_add(1);
+            self.packet_size = packet_size;
+            self.status = Status::PACKET;
+
             if buf.remaining() < packet_size {
-                self.status = Status::PACKET;
-                self.packet_size = packet_size;
                 return Ok(None);
             }
         } else if buf.remaining() < self.packet_size {
             return Ok(None);
         }
 
-        // let payload = buf.split_off(self.packet_size).freeze();
-        let payload = buf.split().freeze();
+        let payload = buf.split_to(self.packet_size).freeze();
         // TODO: packet compression
         // TODO: packet joining
 
@@ -502,6 +629,8 @@ impl Decoder for PacketCodec {
         self.packet_size = 0;
         self.status = Status::START;
         let id = self.sequence_id;
+        // println!("pl: 0x{:X}", payload.clone());
+        println!("pl: {:?}", payload.clone());
         Ok(Some((Packet(payload), id)))
     }
 }

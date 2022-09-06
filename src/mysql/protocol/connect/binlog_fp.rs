@@ -10,8 +10,12 @@ pub(crate) struct BinlogFilenameAndPosition {
 impl Decode<'_> for BinlogFilenameAndPosition {
 
     fn decode_with(mut buf: Bytes, _: ()) -> Result<Self, Error> {
-        let binlog_filename = buf.get_str_nul()?;
+        println!("buf: {:?}", buf.clone());
         let binlog_position = buf.get_u32_le();
+        buf.advance(2);
+        let server_id = buf.get_bytes(2).get_str_nul()?;
+        println!("server_id: {}", server_id);
+        let binlog_filename = buf.get_str_nul()?;
         Ok(Self {binlog_filename, binlog_position})
     }
 }
