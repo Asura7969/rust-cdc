@@ -238,8 +238,9 @@ impl MyStream {
 
     async fn next_event(&mut self) -> Result<MysqlEvent, Error> {
         let packet = self.next_packet().await?;
-        let bytes = packet.0;
-        println!("next_event bytes: {:?}", bytes.clone().to_vec());
+        let mut bytes = packet.0;
+        bytes.get_bytes(1);
+        // bytes.get_bytes(4);
         let (event, _) = Event::decode(bytes, &mut self.table_map)?;
         Ok(event)
     }
@@ -250,23 +251,23 @@ impl MyStream {
 
         // todo: fetchBinlogFilenameAndPosition
         self.send_packet(Query("show master status")).await;
-        // self.flush().await?;
 
-        match self.fetch().await? {
+        return match self.fetch().await? {
             Some(row) => {
                 let file_name_bytes = row.get(0).expect("binlog file name parse error");
                 let file_name = from_utf8(file_name_bytes)?;
-                println!("file_name: {}", file_name.clone());
 
                 let mut pos_bytes = Bytes::from(row.get(1)
                     .expect("binlog pos parse error")
                     .to_vec());
                 let pos_len = pos_bytes.len();
                 let pos: u32 = pos_bytes.get_str(pos_len)?.parse()?;
-                let gtid_set = from_utf8(&row.get(4).expect("_gtid_set parse error"))?;
+                let gtid_set = from_utf8(&row.get(4).expect("GTID_SET parse error"))?;
 
+                println!("file_name: {}", file_name.clone());
                 println!("pos: {}", pos);
                 println!("gtid_set: {}", gtid_set);
+
                 // todo: fetchBinlogChecksum
                 // show global variables like 'binlog_checksum'
 
@@ -280,10 +281,10 @@ impl MyStream {
                     binlog_filename: file_name.to_string()
                 }).await;
 
-                // stream.flush().await?;
-                return Ok(())
+                self.maybe_recv_eof().await?;
+                Ok(())
             },
-            None => return Err(err_parse!("fetch latest binlog info failed!"))
+            None => Err(err_parse!("fetch latest binlog info failed!"))
         }
 
     }
@@ -629,8 +630,7 @@ impl Decoder for PacketCodec {
         self.packet_size = 0;
         self.status = Status::START;
         let id = self.sequence_id;
-        // println!("pl: 0x{:X}", payload.clone());
-        println!("pl: {:?}", payload.clone());
+        // println!("pl: {:?}", payload.clone().to_vec());
         Ok(Some((Packet(payload), id)))
     }
 }

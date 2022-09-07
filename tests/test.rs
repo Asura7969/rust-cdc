@@ -19,6 +19,7 @@ async fn test_mysql_cdc() -> Result<(), Error> {
         .password(None)
         .database(Some("rustcdc".to_string()))
         .charset("utf8mb4")
+        .server_id(5)
         .connect().await?;
 
     stream.register_listener(Listener::default());

@@ -14,9 +14,9 @@ pub(crate) struct ComBinlogDump {
 impl Encode<'_, Capabilities> for ComBinlogDump {
     fn encode_with(&self, buf: &mut Vec<u8>, _: Capabilities) {
         buf.put_u8(0x12);
-        buf.put_u32(self.binlog_pos);
-        buf.put_u16(0);
-        buf.put_u32(self.server_id);
-        buf.put_str_nul(self.binlog_filename.as_str())
+        buf.put_u32_le(self.binlog_pos);
+        buf.put_u16_le(0);
+        buf.put_u32_le(self.server_id);
+        buf.put(self.binlog_filename.as_bytes())
     }
 }
