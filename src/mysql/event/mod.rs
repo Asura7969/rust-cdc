@@ -124,20 +124,22 @@ impl Event {
         /// [header size is 19]
         ///
         /// [header size is 19]: https://dev.mysql.com/doc/internals/en/binlog-event-header.html
+        ///
+        /// [Replication event checksums]
+        ///
+        /// [Replication event checksums]: https://dev.mysql.com/worklog/task/?id=2540#tabs-2540-4
+        ///
+        /// ```text
+        ///
+        /// +-----------+------------+-----------+------------------------+----------+
+        /// | Header    | Payload (dataLength)   | Checksum Type (1 byte) | Checksum |
+        /// +-----------+------------+-----------+------------------------+----------+
+        ///             |                    (eventBodyLength)                       |
+        ///             +------------------------------------------------------------+
+        /// ```
         let (header, body_buf) = EventHeaderV4::decode(buf)?;
         let event_type = header.event_type;
         let (event, op_buf) = match header.event_type {
-            /// [Replication event checksums]
-            ///
-            /// [Replication event checksums]: https://dev.mysql.com/worklog/task/?id=2540#tabs-2540-4
-            ///
-            /// ---
-            ///
-            /// +-----------+------------+-----------+------------------------+----------+
-            /// | Header    | Payload (dataLength)   | Checksum Type (1 byte) | Checksum |
-            /// +-----------+------------+-----------+------------------------+----------+
-            ///             |                    (eventBodyLength)                       |
-            ///             +------------------------------------------------------------+
             EventType::FormatDescriptionEvent => decode_format_desc(body_buf, header)?,
             EventType::TableMapEvent => {
                 let (ev, op_buf) = decode_table_map(body_buf, header)?;
@@ -482,12 +484,12 @@ impl ColTypes {
             ColTypes::VarChar(max_len) => {
                 if max_len > 255 {
                     let len = buf.get_u16_le();
-                    let vec = buf.get_bytes(len as usize).to_vec();
-                    (len as usize + 2, ColValues::VarChar(vec))
+                    let value = buf.get_str(len as usize)?;
+                    (len as usize + 2, ColValues::VarChar(value))
                 } else {
                     let len = buf.get_u8();
-                    let vec = buf.get_bytes(len as usize).to_vec();
-                    (len as usize + 1, ColValues::VarChar(vec))
+                    let value = buf.get_str(len as usize)?;
+                    (len as usize + 1, ColValues::VarChar(value))
                 }
             },
             ColTypes::Bit(b1, b2) => {
@@ -531,12 +533,14 @@ impl ColTypes {
             ColTypes::VarString(_, _) => {
                 // TODO should check string max_len ?
                 let len = buf.get_u8();
-                (len as usize, ColValues::VarString(buf.get_bytes(len as usize).to_vec()))
+                let value = buf.get_str(len as usize)?;
+                (len as usize, ColValues::VarString(value))
             }
             ColTypes::String(_, _) => {
                 // TODO should check string max_len ?
                 let len = buf.get_u8();
-                (len as usize, ColValues::VarChar(buf.get_bytes(len as usize).to_vec()))
+                let value = buf.get_str(len as usize)?;
+                (len as usize, ColValues::VarChar(value))
             }
             // TODO fix do not use len in def ?
             ColTypes::Geometry(len) => {
@@ -568,7 +572,7 @@ pub enum ColValues {
     DateTime(Vec<u8>),
     Year(Vec<u8>),
     NewDate, // internal used
-    VarChar(Vec<u8>),
+    VarChar(String),
     Bit(Vec<u8>),
     Timestamp2(Vec<u8>),
     DateTime2(Vec<u8>),
@@ -580,7 +584,7 @@ pub enum ColValues {
     MediumBlob, // internal used
     LongBlob,   // internal used
     Blob(Vec<u8>),
-    VarString(Vec<u8>),
-    String(Vec<u8>),
+    VarString(String),
+    String(String),
     Geometry(Vec<u8>),
 }

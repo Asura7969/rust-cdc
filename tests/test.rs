@@ -9,26 +9,6 @@ use rustcdc::io::buf::BufExt;
 use rustcdc::mysql::ColTypes::{Long, VarChar};
 use rustcdc::mysql::RowType::NewRow;
 
-#[tokio::test]
-async fn test_mysql_cdc() -> Result<(), Error> {
-
-    let mut stream = MySqlOption::new()
-        .host("127.0.0.1")
-        .port(3556)
-        .username("root")
-        .password(None)
-        .database(Some("rustcdc".to_string()))
-        .charset("utf8mb4")
-        .server_id(5)
-        .connect().await?;
-
-    stream.register_listener(Listener::default());
-
-    stream.start().await;
-
-    Ok(())
-}
-
 #[test]
 fn test_format_desc() {
     let input = include_bytes!("events/15_format_desc/binlog.000002").to_vec();
