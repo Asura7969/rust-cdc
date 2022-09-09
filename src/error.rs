@@ -93,6 +93,7 @@ pub enum Error {
     #[error("runtime error")]
     RuntimeErr(Utf8Error)
 
+
 }
 
 impl StdError for Box<dyn DatabaseError> {}

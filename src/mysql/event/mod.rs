@@ -124,23 +124,24 @@ pub fn has_buf(mut buf: Bytes) -> Option<Bytes>{
 
 impl Event {
 
+    /// [header size is 19]
+    ///
+    /// [header size is 19]: https://dev.mysql.com/doc/internals/en/binlog-event-header.html
+    ///
+    /// [Replication event checksums]
+    ///
+    /// [Replication event checksums]: https://dev.mysql.com/worklog/task/?id=2540#tabs-2540-4
+    ///
+    /// ```text
+    ///
+    /// +-------------------------------------------------------------------+
+    /// | Header | Payload (dataLength) | Checksum Type (1 byte) | Checksum |
+    /// +-------------------------------------------------------------------+
+    ///          |                 (eventBodyLength)                        |
+    ///          +----------------------------------------------------------+
+    /// ```
     pub fn decode(mut buf: Bytes, table_map: &mut TableMap) -> Result<(MysqlEvent, Option<Bytes>), Error> {
-        /// [header size is 19]
-        ///
-        /// [header size is 19]: https://dev.mysql.com/doc/internals/en/binlog-event-header.html
-        ///
-        /// [Replication event checksums]
-        ///
-        /// [Replication event checksums]: https://dev.mysql.com/worklog/task/?id=2540#tabs-2540-4
-        ///
-        /// ```text
-        ///
-        /// +-----------+------------+-----------+------------------------+----------+
-        /// | Header    | Payload (dataLength)   | Checksum Type (1 byte) | Checksum |
-        /// +-----------+------------+-----------+------------------------+----------+
-        ///             |                    (eventBodyLength)                       |
-        ///             +------------------------------------------------------------+
-        /// ```
+
         let (header, body_buf) = EventHeaderV4::decode(buf)?;
         let event_type = header.event_type;
         let (event, op_buf) = match header.event_type {

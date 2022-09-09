@@ -3,16 +3,7 @@ extern crate core;
 pub mod mysql;
 pub mod io;
 pub(crate) mod net;
+pub(crate) mod snapshot;
 
 #[macro_use]
 pub mod error;
-
-
-// #[cfg(test)]
-// mod tests {
-//     #[test]
-//     fn it_works() {
-//         let result = 2 + 2;
-//         assert_eq!(result, 4);
-//     }
-// }

@@ -43,7 +43,6 @@ impl MySqlOption {
         Self {
             port: 3306,
             host: String::from("localhost"),
-            // socket: None,
             username: String::from("root"),
             password: None,
             database: None,
@@ -114,7 +113,7 @@ impl MySqlOption {
         stream.set_pipes_as_concat().await?;
         stream.set_checksum().await?;
         stream.set_binlog_pos().await?;
-        // todo: load snapshort or init new default
+        // todo: load snapshot or init new default
 
         // stream.notify_listener().await;
 
