@@ -218,6 +218,15 @@ pub(crate) fn decode_unknown(mut buf: Bytes,
         }, has_buf(buf)))
 }
 
+pub(crate) fn decode_heartbeat(mut buf: Bytes,
+                               header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
+    let checksum = buf.get_u32_le();
+    Ok((MysqlEvent::HeartbeatEvent {
+        header,
+        checksum
+    }, has_buf(buf)))
+}
+
 pub(crate) fn decode_previous_gtids(mut buf: Bytes,
                                     header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
     let num = header.event_size - 19 - 4 - 4;

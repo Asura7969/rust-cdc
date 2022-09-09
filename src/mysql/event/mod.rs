@@ -33,6 +33,10 @@ pub enum MysqlEvent {
         header_len: u8,
         checksum: ChecksumType,
     },
+    HeartbeatEvent {
+        header: EventHeaderV4,
+        checksum: u32,
+    },
     GtidEvent {
         header: EventHeaderV4,
         flags: u8,
@@ -161,6 +165,7 @@ impl Event {
             },
             EventType::PreviousGtidsEvent => decode_previous_gtids(body_buf, header)?,
             EventType::UnknownEvent => decode_unknown(body_buf, header)?,
+            EventType::HeartbeatEvent => decode_heartbeat(body_buf, header)?,
             EventType::GtidEvent => decode_gtid(body_buf, header)?,
             EventType::AnonymousGtidEvent => decode_anonymous_gtid(body_buf, header)?,
             EventType::QueryEvent => decode_query(body_buf, header)?,

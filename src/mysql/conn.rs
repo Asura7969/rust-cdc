@@ -112,7 +112,6 @@ impl MySqlOption {
         let mut stream = MyStream::new(to_server, from_server, self, capabilities);
         stream.establish().await?;
         stream.set_pipes_as_concat().await?;
-        stream.ping().await?;
         stream.set_checksum().await?;
         stream.set_binlog_pos().await?;
         // todo: load snapshort or init new default
@@ -223,6 +222,7 @@ impl MyStream {
         let mut command = String::new();
         command.push_str("set @master_binlog_checksum= @@global.binlog_checksum");
         self.send_packet(Query(command.as_str())).await;
+        let _ = self.next_packet().await?.ok();
         Ok(())
     }
 
@@ -240,16 +240,11 @@ impl MyStream {
         let packet = self.next_packet().await?;
         let mut bytes = packet.0;
         bytes.get_bytes(1);
-        // bytes.get_bytes(4);
         let (event, _) = Event::decode(bytes, &mut self.table_map)?;
         Ok(event)
     }
 
     pub(crate) async fn set_binlog_pos(&mut self) -> Result<(), Error> {
-        let _ = self.next_packet().await?.ok();
-        let _ = self.next_packet().await?.ok();
-
-        // todo: fetchBinlogFilenameAndPosition
         self.send_packet(Query("show master status")).await;
 
         return match self.fetch().await? {
@@ -458,6 +453,7 @@ impl MyStream {
             collation.as_str()
         ));
         self.send_packet(Query(command.as_str())).await;
+        let _ = self.next_packet().await?.ok();
         Ok(())
         // conn.execute(&*options).await?;
     }
