@@ -22,6 +22,7 @@ use crate::mysql::collation::{CharSet, Collation};
 use crate::mysql::protocol::connect::{AuthSwitchRequest, AuthSwitchResponse, BinlogFilenameAndPosition, ComBinlogDump, Handshake, HandshakeResponse};
 use crate::mysql::protocol::row::Row;
 use crate::mysql::protocol::text::{Ping, Query};
+use crate::snapshot::LogCommitter;
 
 const MAX_BLOCK_LENGTH: usize = 16777212;
 
@@ -35,11 +36,12 @@ pub struct MySqlOption {
     charset: String,
     collation: Option<String>,
     pipes_as_concat: bool,
+    log_committer: Box<dyn LogCommitter>,
 }
 
 impl MySqlOption {
 
-    pub fn new() -> Self {
+    pub fn new(log_committer: Box<dyn LogCommitter>) -> Self {
         Self {
             port: 3306,
             host: String::from("localhost"),
@@ -53,6 +55,7 @@ impl MySqlOption {
             // ssl_ca: None,
             collation: None,
             pipes_as_concat: true,
+            log_committer
         }
     }
 
@@ -112,8 +115,9 @@ impl MySqlOption {
         stream.establish().await?;
         stream.set_pipes_as_concat().await?;
         stream.set_checksum().await?;
+
         stream.set_binlog_pos().await?;
-        // todo: load snapshot or init new default
+
 
         // stream.notify_listener().await;
 
@@ -176,6 +180,7 @@ pub struct MyStream {
     pub(crate) server_version: (u16, u16, u16),
     table_map: TableMap,
     listener: Listener,
+
 }
 
 
@@ -244,42 +249,65 @@ impl MyStream {
     }
 
     pub(crate) async fn set_binlog_pos(&mut self) -> Result<(), Error> {
+
+        // Load snapshot or start from latest offset
+
+        let snapshot = match self.option.log_committer.get_latest_record()? {
+            Some(record) => (Some(record.file_name), Some(record.log_pos)),
+            _ => (None, None)
+        };
+
+        let com_binlog_dump = match snapshot {
+            (Some(f), Some(o)) => {
+                ComBinlogDump {
+                    binlog_pos: o,
+                    server_id: self.option.server_id,
+                    binlog_filename: f
+                }
+            },
+            _ => {
+                println!("从 binlog 最新偏移量消费!");
+
+                self.send_packet(Query("show master status")).await;
+
+                match self.fetch().await? {
+                    Some(row) => {
+                        let file_name_bytes = row.get(0).expect("binlog file name parse error");
+                        let file_name = from_utf8(file_name_bytes)?;
+
+                        let mut pos_bytes = Bytes::from(row.get(1)
+                            .expect("binlog pos parse error")
+                            .to_vec());
+                        let pos_len = pos_bytes.len();
+                        let pos: u32 = pos_bytes.get_str(pos_len)?.parse()?;
+                        let gtid_set = from_utf8(&row.get(4).expect("GTID_SET parse error"))?;
+
+                        println!("file_name: {}, pos: {}, gtid_set: {}", file_name.clone(), pos, gtid_set);
+
+                        ComBinlogDump {
+                            binlog_pos: pos,
+                            server_id: self.option.server_id,
+                            binlog_filename: file_name.to_string()
+                        }
+                    },
+                    None => return Err(err_parse!("fetch latest binlog info failed!"))
+                }
+            }
+        };
+
+        // todo: fetchBinlogChecksum
+        // show global variables like 'binlog_checksum'
+
+        // enableHeartbeat
+        println!("send COM_BINLOG_DUMP");
+        // send COM_BINLOG_DUMP
+        self.send_packet(com_binlog_dump).await;
+
+        self.maybe_recv_eof().await?;
+
         self.send_packet(Query("show master status")).await;
 
-        return match self.fetch().await? {
-            Some(row) => {
-                let file_name_bytes = row.get(0).expect("binlog file name parse error");
-                let file_name = from_utf8(file_name_bytes)?;
-
-                let mut pos_bytes = Bytes::from(row.get(1)
-                    .expect("binlog pos parse error")
-                    .to_vec());
-                let pos_len = pos_bytes.len();
-                let pos: u32 = pos_bytes.get_str(pos_len)?.parse()?;
-                let gtid_set = from_utf8(&row.get(4).expect("GTID_SET parse error"))?;
-
-                println!("file_name: {}", file_name.clone());
-                println!("pos: {}", pos);
-                println!("gtid_set: {}", gtid_set);
-
-                // todo: fetchBinlogChecksum
-                // show global variables like 'binlog_checksum'
-
-                // enableHeartbeat
-
-                println!("send COM_BINLOG_DUMP");
-                // send COM_BINLOG_DUMP
-                self.send_packet(ComBinlogDump {
-                    binlog_pos: pos,
-                    server_id: self.option.server_id,
-                    binlog_filename: file_name.to_string()
-                }).await;
-
-                self.maybe_recv_eof().await?;
-                Ok(())
-            },
-            None => Err(err_parse!("fetch latest binlog info failed!"))
-        }
+        Ok(())
 
     }
 

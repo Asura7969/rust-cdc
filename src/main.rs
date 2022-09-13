@@ -1,10 +1,14 @@
 use rustcdc::error::Error;
 use rustcdc::mysql::{Listener, MySqlOption};
+use rustcdc::snapshot::FileCommitter;
 
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let mut stream = MySqlOption::new()
+
+    let committer = FileCommitter::default();
+
+    let mut stream = MySqlOption::new(Box::new(committer))
         .host("127.0.0.1")
         .port(3556)
         .username("root")

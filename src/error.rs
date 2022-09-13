@@ -91,7 +91,10 @@ pub enum Error {
     Prepare(String),
 
     #[error("runtime error")]
-    RuntimeErr(Utf8Error)
+    RuntimeErr(Utf8Error),
+
+    #[error("runtime error")]
+    CommitterErr(String)
 
 
 }
@@ -214,6 +217,13 @@ impl From<Utf8Error> for Error {
 
 impl From<ParseIntError> for Error {
     fn from(error: ParseIntError) -> Self {
+        Error::parse(error)
+    }
+}
+
+
+impl From<serde_json::Error> for Error {
+    fn from(error: serde_json::Error) -> Self {
         Error::parse(error)
     }
 }
