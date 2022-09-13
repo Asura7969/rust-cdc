@@ -52,7 +52,9 @@ impl FileCommitter {
         let mut path = PathBuf::from(path);
         if path.is_dir() {
             path.push(COMMIT_FILE_NAME);
-            File::create(path.clone()).ok();
+            if !path.exists() {
+                File::create(path.clone()).ok();
+            }
         } else if path.is_file() {
             commit_error("file-committer initialization failed, need path, not file");
         };
@@ -88,13 +90,13 @@ impl LogCommitter for FileCommitter {
 
     fn get_latest_record(&mut self) -> Result<Option<LogRecord>, Error> {
         let mut f = BufReader::new(File::open(&self.path).unwrap());
-
         let mut latest_line = String::new();
+
         for line in f.lines() {
             latest_line = line.unwrap();
         }
-        let x = latest_line.as_bytes();
-        let record = LogRecord::from(x);
+        let latest = latest_line.as_bytes();
+        let record = LogRecord::from(latest);
         Ok(Some(record))
     }
 

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Encoder, Framed};
-use crate::mysql::{ColumnDefinition, decode_column_def, Event, MAX_PACKET_SIZE, MysqlEvent, TableMap};
+use crate::mysql::{ColumnDefinition, decode_column_def, Event, EventType, MAX_PACKET_SIZE, MysqlEvent, MysqlPayload, TableMap};
 use crate::error::Error;
 use crate::mysql::protocol::{Capabilities, Packet};
 use crate::mysql::protocol::response::{EofPacket, Status as crate_Status};
@@ -180,6 +180,8 @@ pub struct MyStream {
     pub(crate) server_version: (u16, u16, u16),
     table_map: TableMap,
     listener: Listener,
+    binlog_file_name: String,
+    binlog_position: u64,
 
 }
 
@@ -200,6 +202,8 @@ impl MyStream {
             server_version: (0, 0, 0),
             table_map: TableMap::default(),
             listener: Listener::default(),
+            binlog_file_name: "".to_owned(),
+            binlog_position: 0,
         }
     }
 
@@ -211,6 +215,26 @@ impl MyStream {
         loop {
             match self.next_event().await {
                 Ok(event) => {
+                    if event.header.event_type == EventType::RotateEvent {
+                        let (position, next_binlog) = if let MysqlPayload::RotateEvent {
+                            position,
+                            next_binlog,
+                            ..
+                        } = &event.body {
+                            (position, next_binlog)
+                        } else {
+                            unimplemented!()
+                        };
+
+                        self.binlog_file_name = next_binlog.clone();
+                        self.binlog_position = *position;
+                        continue;
+                    } else if event.header.event_type != EventType::TableMapEvent {
+                        if event.header.log_pos > 0 {
+                            self.binlog_position = event.header.log_pos as u64;
+                        }
+                    }
+
                     // send event to listener
                     (self.listener.fn_read)(event)
                 },
@@ -294,7 +318,8 @@ impl MyStream {
                 }
             }
         };
-
+        self.binlog_file_name = com_binlog_dump.binlog_filename.clone();
+        self.binlog_position = com_binlog_dump.binlog_pos as u64;
         // todo: fetchBinlogChecksum
         // show global variables like 'binlog_checksum'
 

@@ -23,10 +23,9 @@ pub(crate) fn replace_note(old_str: String) -> String {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum MysqlEvent {
+pub enum MysqlPayload {
     // https://dev.mysql.com/doc/internals/en/format-description-event.html
     FormatDescriptionEvent {
-        header: EventHeaderV4,
         binlog_version: u16,
         sever_version: String,
         create_timestamp: u32,
@@ -34,11 +33,9 @@ pub enum MysqlEvent {
         checksum: ChecksumType,
     },
     HeartbeatEvent {
-        header: EventHeaderV4,
         checksum: u32,
     },
     GtidEvent {
-        header: EventHeaderV4,
         flags: u8,
         uuid: Uuid,
         gno: u64,
@@ -47,7 +44,6 @@ pub enum MysqlEvent {
         checksum: u32,
     },
     AnonymousGtidEvent {
-        header: EventHeaderV4,
         flags: u8,
         uuid: Uuid,
         gno: u64,
@@ -56,13 +52,11 @@ pub enum MysqlEvent {
         checksum: u32,
     },
     RotateEvent {
-        header: EventHeaderV4,
         position: u64,
         next_binlog: String,
         checksum: u32,
     },
     PreviousGtidsEvent {
-        header: EventHeaderV4,
         // TODO do more specify parse
         gtid_sets: Vec<u8>,
         buf_size: u32,
@@ -70,7 +64,6 @@ pub enum MysqlEvent {
     },
     // https://dev.mysql.com/doc/internals/en/query-event.html
     QueryEvent {
-        header: EventHeaderV4,
         thread_id: u32,
         exec_time: u32,
         error_code: u16,
@@ -79,7 +72,6 @@ pub enum MysqlEvent {
     },
     // https://dev.mysql.com/doc/internals/en/table-map-event.html
     TableMapEvent {
-        header: EventHeaderV4,
         table_id: u64,
         schema_name: String,
         table: String,
@@ -87,27 +79,28 @@ pub enum MysqlEvent {
         nullable_bitmap: BitSet,
     },
     UnknownEvent {
-        header: EventHeaderV4,
         checksum: u32,
     },
     // https://dev.mysql.com/doc/internals/en/xid-event.html
     XidEvent {
-        header: EventHeaderV4,
         xid: u64,
     },
     WriteEvent {
-        header: EventHeaderV4,
         rows: RowsEvent,
     },
     UpdateEvent {
-        header: EventHeaderV4,
         rows: RowsEvent,
     },
     DeleteEvent {
-        header: EventHeaderV4,
         rows: RowsEvent,
     },
 
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct MysqlEvent {
+    pub header: EventHeaderV4,
+    pub body: MysqlPayload
 }
 
 
@@ -143,14 +136,13 @@ impl Event {
     pub fn decode(mut buf: Bytes, table_map: &mut TableMap) -> Result<(MysqlEvent, Option<Bytes>), Error> {
 
         let (header, body_buf) = EventHeaderV4::decode(buf)?;
-        let event_type = header.event_type;
-        let (event, op_buf) = match header.event_type {
-            EventType::FormatDescriptionEvent => decode_format_desc(body_buf, header)?,
+        let event_type = &header.event_type;
+        let (event, op_buf) = match &header.event_type {
+            EventType::FormatDescriptionEvent => decode_format_desc(body_buf, &header)?,
             EventType::TableMapEvent => {
-                let (ev, op_buf) = decode_table_map(body_buf, header)?;
+                let (ev, op_buf) = decode_table_map(body_buf)?;
                 match ev.clone() {
-                    MysqlEvent::TableMapEvent {
-                        header,
+                    MysqlPayload::TableMapEvent {
                         table_id,
                         schema_name,
                         table,
@@ -164,28 +156,28 @@ impl Event {
 
                 (ev, op_buf)
             },
-            EventType::PreviousGtidsEvent => decode_previous_gtids(body_buf, header)?,
-            EventType::UnknownEvent => decode_unknown(body_buf, header)?,
-            EventType::HeartbeatEvent => decode_heartbeat(body_buf, header)?,
-            EventType::GtidEvent => decode_gtid(body_buf, header)?,
-            EventType::AnonymousGtidEvent => decode_anonymous_gtid(body_buf, header)?,
-            EventType::QueryEvent => decode_query(body_buf, header)?,
-            EventType::XidEvent => decode_xid(body_buf, header)?,
-            EventType::RotateEvent => decode_rotate(body_buf, header)?,
+            EventType::PreviousGtidsEvent => decode_previous_gtids(body_buf, &header)?,
+            EventType::UnknownEvent => decode_unknown(body_buf)?,
+            EventType::HeartbeatEvent => decode_heartbeat(body_buf)?,
+            EventType::GtidEvent => decode_gtid(body_buf)?,
+            EventType::AnonymousGtidEvent => decode_anonymous_gtid(body_buf)?,
+            EventType::QueryEvent => decode_query(body_buf, &header)?,
+            EventType::XidEvent => decode_xid(body_buf)?,
+            EventType::RotateEvent => decode_rotate(body_buf, &header)?,
             EventType::WriteRowsEventV1
             | EventType::WriteRowsEventV2 =>
-                decode_write_row(body_buf, header, event_type, Some(table_map))?,
+                decode_write_row(body_buf,  event_type, Some(table_map))?,
             EventType::UpdateRowsEventV1
             | EventType::UpdateRowsEventV2 =>
-                decode_update_row(body_buf, header, event_type, Some(table_map))?,
+                decode_update_row(body_buf, event_type, Some(table_map))?,
             EventType::DeleteRowsEventV1
             | EventType::DeleteRowsEventV2 =>
-                decode_delete_row(body_buf, header, event_type, Some(table_map))?,
+                decode_delete_row(body_buf, event_type, Some(table_map))?,
             e@ _ => {
                 return Err(err_protocol!("{:?}", e))
             },
         };
-        Ok((event, op_buf))
+        Ok((MysqlEvent{header, body: event }, op_buf))
     }
 }
 

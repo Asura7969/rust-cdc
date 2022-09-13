@@ -4,7 +4,7 @@ use bit_set::BitSet;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use rustcdc::*;
 use rustcdc::error::Error;
-use rustcdc::mysql::{ChecksumType, ColValues, Event, Listener, MysqlEvent, MySqlOption, RowsEvent, RowType, TableMap};
+use rustcdc::mysql::{ChecksumType, ColValues, Event, Listener, MysqlEvent, MySqlOption, MysqlPayload, RowsEvent, RowType, TableMap};
 use rustcdc::io::buf::BufExt;
 use rustcdc::mysql::ColTypes::{Long, VarChar};
 use rustcdc::mysql::RowType::NewRow;
@@ -16,9 +16,8 @@ fn test_format_desc() {
     buf.get_bytes(4);
     let mut table_map = TableMap::default();
     let (event, _) = Event::decode(buf, &mut table_map).unwrap();
-    match event {
-        MysqlEvent::FormatDescriptionEvent {
-            header,
+    match event.body {
+        MysqlPayload::FormatDescriptionEvent {
             binlog_version,
             sever_version,
             create_timestamp,
@@ -44,9 +43,9 @@ fn test_xid() {
     let mut table_map = TableMap::default();
     loop {
         let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
-        match event {
-            MysqlEvent::XidEvent {
-                header, xid
+        match event.body {
+            MysqlPayload::XidEvent {
+                xid
             } => {
                 assert_eq!(xid, 852);
                 break
@@ -78,9 +77,8 @@ fn test_table_map() {
 
     loop {
         let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
-        match event {
-            MysqlEvent::TableMapEvent {
-                header,
+        match event.body {
+            MysqlPayload::TableMapEvent {
                 table_id,
                 schema_name,
                 table,
@@ -114,21 +112,21 @@ fn test_write_rows_v2() {
     buf.get_bytes(687);
     let mut table_map = TableMap::default();
 
+    let v = String::from_utf8(vec![99, 100, 99, 45, 49]).unwrap();
     let cols:Vec<ColValues> = vec![ColValues::Long(vec![1, 0, 0, 0]),
-                                   ColValues::VarChar(vec![99, 100, 99, 45, 49])];
+                                   ColValues::VarChar(v)];
     let re = NewRow { cols };
     loop {
         let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
-        match event {
-            MysqlEvent::TableMapEvent {
+        match event.body {
+            MysqlPayload::TableMapEvent {
                 ..
             } => {
                 assert!(table_map.get(71).is_some());
                 buf = op_buf.unwrap();
                 buf.get_bytes(4);
             },
-            MysqlEvent::WriteEvent {
-                header,
+            MysqlPayload::WriteEvent {
                 rows,
             } => {
                 assert_eq!(rows.table_id, 71);
@@ -156,10 +154,12 @@ fn test_update_rows_v2() {
     let abc = vec![97, 98, 99];
     let xd = vec![120, 100];
 
+    let v = String::from_utf8(abc).unwrap();
+    let v1 = String::from_utf8(xd).unwrap();
     let before = vec![
         ColValues::Long(vec![1, 0, 0, 0]),
-        ColValues::VarChar(abc.clone()),
-        ColValues::VarChar(abc.clone()),
+        ColValues::VarChar(v.clone()),
+        ColValues::VarChar(v.clone()),
         ColValues::Blob(abc.clone()),
         ColValues::Blob(abc.clone()),
         ColValues::Blob(abc.clone()),
@@ -170,8 +170,8 @@ fn test_update_rows_v2() {
 
     let after = vec![
         ColValues::Long(vec![1, 0, 0, 0]),
-        ColValues::VarChar(xd.clone()),
-        ColValues::VarChar(xd.clone()),
+        ColValues::VarChar(v1.clone()),
+        ColValues::VarChar(v1.clone()),
         ColValues::Blob(xd.clone()),
         ColValues::Blob(xd.clone()),
         ColValues::Blob(xd.clone()),
@@ -189,16 +189,15 @@ fn test_update_rows_v2() {
 
     loop {
         let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
-        match event {
-            MysqlEvent::TableMapEvent {
+        match event.body {
+            MysqlPayload::TableMapEvent {
                 ..
             } => {
                 assert!(table_map.get(72).is_some());
                 buf = op_buf.unwrap();
                 buf.get_bytes(4);
             },
-            MysqlEvent::UpdateEvent {
-                header,
+            MysqlPayload::UpdateEvent {
                 rows,
             } => {
                 assert_eq!(rows.rows, vec![expect_row]);
@@ -226,26 +225,26 @@ fn test_delete_rows_v2() {
 
     loop {
         let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
-        match event {
-            MysqlEvent::TableMapEvent {
+        match event.body {
+            MysqlPayload::TableMapEvent {
                 ..
             } => {
                 assert!(table_map.get(76).is_some());
                 buf = op_buf.unwrap();
                 buf.get_bytes(4);
             },
-            MysqlEvent::DeleteEvent {
-                header,
+            MysqlPayload::DeleteEvent {
                 rows,
             } => {
                 assert_eq!(rows.table_id, 76);
                 // assert_eq!(row_event.column_count, 2);
+                let v = String::from_utf8(vec![97, 98, 99, 100, 101]).unwrap();
                 assert_eq!(
                     rows.rows,
                     vec![RowType::DeletedRow {
                         cols: vec![
                             ColValues::Long(vec![1, 0, 0, 0]),
-                            ColValues::VarChar(vec![97, 98, 99, 100, 101])
+                            ColValues::VarChar(v)
                         ]
                     }]
                 );
@@ -272,9 +271,8 @@ fn test_query() {
     buf.get_bytes(256);
     let mut table_map = TableMap::default();
     let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
-    match event {
-        MysqlEvent::QueryEvent {
-            header,
+    match event.body {
+        MysqlPayload::QueryEvent {
             thread_id,
             exec_time,
             error_code,
@@ -299,9 +297,8 @@ fn test_gtid_prev_gtid() {
     buf.get_bytes(120);
     let mut table_map = TableMap::default();
     let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
-    match event {
-        MysqlEvent::PreviousGtidsEvent {
-            header,
+    match event.body {
+        MysqlPayload::PreviousGtidsEvent {
             gtid_sets,
             buf_size,
             checksum,
@@ -321,9 +318,8 @@ fn test_gtid() {
     buf.get_bytes(151);
     let mut table_map = TableMap::default();
     let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
-    match event {
-        MysqlEvent::GtidEvent {
-            header,
+    match event.body {
+        MysqlPayload::GtidEvent {
             flags,
             uuid,
             gno,
@@ -344,9 +340,8 @@ fn test_rotate() {
     buf.get_bytes(999);
     let mut table_map = TableMap::default();
     let (event, op_buf) = Event::decode(buf, &mut table_map).unwrap();
-    match event {
-        MysqlEvent::RotateEvent {
-            header,
+    match event.body {
+        MysqlPayload::RotateEvent {
             position,
             next_binlog,
             checksum,

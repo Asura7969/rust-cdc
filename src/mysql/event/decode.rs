@@ -7,16 +7,7 @@ use crate::err_parse;
 use crate::error::Error;
 use crate::io::BufExt;
 use crate::mysql::event::{EventType, ColTypes};
-use crate::mysql::{
-    ColValues,
-    EventHeaderV4,
-    has_buf,
-    MysqlEvent,
-    RowType,
-    RowsEvent,
-    SingleTableMap,
-    TableMap,
-    replace_note};
+use crate::mysql::{ColValues, EventHeaderV4, has_buf, MysqlEvent, RowType, RowsEvent, SingleTableMap, TableMap, replace_note, MysqlPayload};
 use crate::mysql::io::MySqlBufExt;
 
 
@@ -48,7 +39,7 @@ impl ColumnDefinition {
     }
 }
 
-pub(crate) fn decode_column_def(mut buf: Bytes,) -> Result<(ColumnDefinition, Option<Bytes>), Error>{
+pub(crate) fn decode_column_def(mut buf: Bytes) -> Result<(ColumnDefinition, Option<Bytes>), Error>{
     let catalog = buf.get_bytes_lenenc();
     let schema = buf.get_bytes_lenenc();
     let table_alias = buf.get_bytes_lenenc();
@@ -78,45 +69,38 @@ pub(crate) fn decode_column_def(mut buf: Bytes,) -> Result<(ColumnDefinition, Op
 }
 
 pub(crate) fn decode_delete_row(mut buf: Bytes,
-                                header: EventHeaderV4,
-                                event_type: EventType,
-                                table_map: Option<&mut TableMap>) -> Result<(MysqlEvent, Option<Bytes>), Error> {
+                                event_type: &EventType,
+                                table_map: Option<&mut TableMap>) -> Result<(MysqlPayload, Option<Bytes>), Error> {
     let (rows, op_buf) = parse_rows_event(event_type, buf, table_map)?;
-    Ok((MysqlEvent::DeleteEvent {
-        header,
+    Ok((MysqlPayload::DeleteEvent {
         rows,
     }, op_buf))
 }
 
 pub(crate) fn decode_update_row(mut buf: Bytes,
-                               header: EventHeaderV4,
-                               event_type: EventType,
-                               table_map: Option<&mut TableMap>) -> Result<(MysqlEvent, Option<Bytes>), Error> {
+                               event_type: &EventType,
+                               table_map: Option<&mut TableMap>) -> Result<(MysqlPayload, Option<Bytes>), Error> {
     let (rows, op_buf) = parse_rows_event(event_type, buf, table_map)?;
-    Ok((MysqlEvent::UpdateEvent {
-        header,
+    Ok((MysqlPayload::UpdateEvent {
         rows,
     }, op_buf))
 }
 
 pub(crate) fn decode_write_row(mut buf: Bytes,
-                                  header: EventHeaderV4,
-                                  event_type: EventType,
-                                  table_map: Option<&mut TableMap>) -> Result<(MysqlEvent, Option<Bytes>), Error> {
+                                  event_type: &EventType,
+                                  table_map: Option<&mut TableMap>) -> Result<(MysqlPayload, Option<Bytes>), Error> {
     let (rows, op_buf) = parse_rows_event(event_type, buf, table_map)?;
-    Ok((MysqlEvent::WriteEvent {
-        header,
+    Ok((MysqlPayload::WriteEvent {
         rows,
     }, op_buf))
 }
 
-pub(crate) fn decode_xid(mut buf: Bytes,
-                         header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
-    Ok((MysqlEvent::XidEvent { header, xid: buf.get_u64_le() }, has_buf(buf)))
+pub(crate) fn decode_xid(mut buf: Bytes) -> Result<(MysqlPayload, Option<Bytes>), Error> {
+    Ok((MysqlPayload::XidEvent { xid: buf.get_u64_le() }, has_buf(buf)))
 }
 
 pub(crate) fn decode_query(mut buf: Bytes,
-                           header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
+                           header: &EventHeaderV4) -> Result<(MysqlPayload, Option<Bytes>), Error> {
     let thread_id = buf.get_u32_le();
     let exec_time = buf.get_u32_le();
     let schema_length = buf.get_u8() as usize;
@@ -135,8 +119,7 @@ pub(crate) fn decode_query(mut buf: Bytes,
         .position(|&c| c == b'\0')
         .unwrap_or(input.len());
     let query = String::from_utf8_lossy(&input[0..null_end]).to_string();
-    Ok((MysqlEvent::QueryEvent {
-        header,
+    Ok((MysqlPayload::QueryEvent {
         thread_id,
         exec_time,
         error_code,
@@ -146,13 +129,12 @@ pub(crate) fn decode_query(mut buf: Bytes,
 }
 
 pub(crate) fn decode_rotate(mut buf: Bytes,
-                            header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
+                            header: &EventHeaderV4) -> Result<(MysqlPayload, Option<Bytes>), Error> {
     let position = buf.get_u64_le();
     let str_len = header.event_size - 19 - 8 - 4;
     let next_binlog = buf.get_str(str_len as usize)?;
     let checksum = buf.get_u32_le();
-    Ok((MysqlEvent::RotateEvent {
-        header,
+    Ok((MysqlPayload::RotateEvent {
         position,
         next_binlog,
         checksum,
@@ -160,11 +142,9 @@ pub(crate) fn decode_rotate(mut buf: Bytes,
 }
 
 
-pub(crate) fn decode_gtid(mut buf: Bytes,
-                          header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
+pub(crate) fn decode_gtid(mut buf: Bytes) -> Result<(MysqlPayload, Option<Bytes>), Error> {
     let (flags, uuid, gno, _, _, checksum) = gtid(&mut buf, false)?;
-    Ok((MysqlEvent::GtidEvent {
-        header,
+    Ok((MysqlPayload::GtidEvent {
         flags,
         uuid,
         gno,
@@ -174,11 +154,9 @@ pub(crate) fn decode_gtid(mut buf: Bytes,
     }, has_buf(buf)))
 }
 
-pub(crate) fn decode_anonymous_gtid(mut buf: Bytes,
-                                    header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
+pub(crate) fn decode_anonymous_gtid(mut buf: Bytes) -> Result<(MysqlPayload, Option<Bytes>), Error> {
     let (flags, uuid, gno, last_committed, sequence_number, checksum) = gtid(&mut buf, true)?;
-    Ok((MysqlEvent::AnonymousGtidEvent {
-        header,
+    Ok((MysqlPayload::AnonymousGtidEvent {
         flags,
         uuid,
         gno,
@@ -209,41 +187,35 @@ fn gtid(buf: &mut Bytes, flag: bool) -> Result<(u8, Uuid, u64, Option<u64>, Opti
     Ok((flags, uuid, gno, last_committed, sequence_number, checksum))
 }
 
-pub(crate) fn decode_unknown(mut buf: Bytes,
-                             header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
+pub(crate) fn decode_unknown(mut buf: Bytes) -> Result<(MysqlPayload, Option<Bytes>), Error> {
     let checksum = buf.get_u32_le();
-    Ok((MysqlEvent::UnknownEvent {
-        header,
+    Ok((MysqlPayload::UnknownEvent {
         checksum
         }, has_buf(buf)))
 }
 
-pub(crate) fn decode_heartbeat(mut buf: Bytes,
-                               header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
+pub(crate) fn decode_heartbeat(mut buf: Bytes) -> Result<(MysqlPayload, Option<Bytes>), Error> {
     let checksum = buf.get_u32_le();
-    Ok((MysqlEvent::HeartbeatEvent {
-        header,
+    Ok((MysqlPayload::HeartbeatEvent {
         checksum
     }, has_buf(buf)))
 }
 
 pub(crate) fn decode_previous_gtids(mut buf: Bytes,
-                                    header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
+                                    header: &EventHeaderV4) -> Result<(MysqlPayload, Option<Bytes>), Error> {
     let num = header.event_size - 19 - 4 - 4;
     let gtid_sets = buf.get_bytes(num as usize).to_vec();
     let buf_size = buf.get_u32_le();
     let checksum = buf.get_u32_le();
 
-    Ok((MysqlEvent::PreviousGtidsEvent {
-        header,
+    Ok((MysqlPayload::PreviousGtidsEvent {
         gtid_sets,
         buf_size,
         checksum,
     }, has_buf(buf)))
 }
 
-pub(crate) fn decode_table_map(mut buf: Bytes,
-                               header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
+pub(crate) fn decode_table_map(mut buf: Bytes) -> Result<(MysqlPayload, Option<Bytes>), Error> {
     let mut table_bytes = buf.get_bytes(6);
     let table_id = table_bytes.get_uint_lenenc();
     buf.advance(2); // flags
@@ -271,8 +243,7 @@ pub(crate) fn decode_table_map(mut buf: Bytes,
     let x = vec.as_slice();
     let nullable_bitmap = BitSet::from_bytes(x);
 
-    Ok((MysqlEvent::TableMapEvent {
-        header,
+    Ok((MysqlPayload::TableMapEvent {
         table_id,
         schema_name,
         table,
@@ -282,7 +253,7 @@ pub(crate) fn decode_table_map(mut buf: Bytes,
 }
 
 pub(crate) fn decode_format_desc(mut buf: Bytes,
-                                 header: EventHeaderV4) -> Result<(MysqlEvent, Option<Bytes>), Error> {
+                                 header: &EventHeaderV4) -> Result<(MysqlPayload, Option<Bytes>), Error> {
     let binlog_version = buf.get_u16_le();
     if binlog_version != 4 {
         return Err(err_parse!("can only parse a version 4 binary log"));
@@ -300,8 +271,7 @@ pub(crate) fn decode_format_desc(mut buf: Bytes,
         ChecksumType::from(buf.get_u8())
     };
 
-    Ok((MysqlEvent::FormatDescriptionEvent {
-        header,
+    Ok((MysqlPayload::FormatDescriptionEvent {
         binlog_version,
         sever_version,
         create_timestamp,
@@ -311,7 +281,7 @@ pub(crate) fn decode_format_desc(mut buf: Bytes,
 }
 
 fn parse_rows_event(
-    event_type: EventType,
+    event_type: &EventType,
     mut buf: Bytes,
     table_map: Option<&mut TableMap>,
 ) -> Result<(RowsEvent, Option<Bytes>), Error> {
@@ -319,7 +289,7 @@ fn parse_rows_event(
     let mut table_bytes = buf.get_bytes(6);
     let table_id = table_bytes.get_uint_lenenc();
     buf.advance(2); // flags
-    match event_type {
+    match *event_type {
         EventType::WriteRowsEventV2 | EventType::UpdateRowsEventV2 | EventType::DeleteRowsEventV2 => {
             let _extra_data_len = buf.get_u16_le();
             // match extra_data_len {
