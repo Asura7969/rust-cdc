@@ -1,7 +1,10 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::net::SocketAddr;
 use std::str::from_utf8;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Encoder, Framed};
@@ -13,8 +16,10 @@ use crate::mysql::io::MySqlBufExt;
 
 use futures::{SinkExt, StreamExt};
 use futures_util::stream::{SplitSink, SplitStream};
+use log::{error, info};
 use tokio::io::{AsyncRead, AsyncWrite};
-use crate::{err_parse, err_protocol};
+use tokio::time;
+use crate::{err_parse, err_protocol, init_logger};
 use crate::mysql::error::MySqlDatabaseError;
 use crate::mysql::protocol::response::{ErrPacket, OkPacket};
 use crate::io::{BufExt, Decode, Encode};
@@ -22,7 +27,7 @@ use crate::mysql::collation::{CharSet, Collation};
 use crate::mysql::protocol::connect::{AuthSwitchRequest, AuthSwitchResponse, BinlogFilenameAndPosition, ComBinlogDump, Handshake, HandshakeResponse};
 use crate::mysql::protocol::row::Row;
 use crate::mysql::protocol::text::{Ping, Query};
-use crate::snapshot::LogCommitter;
+use crate::snapshot::{FileCommitter, LogCommitter, LogRecord, SnapShotType};
 
 const MAX_BLOCK_LENGTH: usize = 16777212;
 
@@ -36,12 +41,13 @@ pub struct MySqlOption {
     charset: String,
     collation: Option<String>,
     pipes_as_concat: bool,
-    log_committer: Box<dyn LogCommitter>,
+    snapshot: Option<SnapShotType>,
+    log_committer: Option<Box<dyn LogCommitter>>,
 }
 
 impl MySqlOption {
 
-    pub fn new(log_committer: Box<dyn LogCommitter>) -> Self {
+    pub fn new() -> Self {
         Self {
             port: 3306,
             host: String::from("localhost"),
@@ -55,7 +61,8 @@ impl MySqlOption {
             // ssl_ca: None,
             collation: None,
             pipes_as_concat: true,
-            log_committer
+            snapshot: Some(SnapShotType::FILE),
+            log_committer: None
         }
     }
 
@@ -99,10 +106,22 @@ impl MySqlOption {
         self
     }
 
-    pub async fn connect(mut self) -> Result<MyStream, Error> {
+    pub fn snapshot(mut self, snapshot_type: SnapShotType) -> Self {
+        self.snapshot = Some(snapshot_type);
+        self
+    }
+
+    pub fn log_committer(mut self, log_committer: Box<dyn LogCommitter>) -> Self {
+        self.log_committer = Some(log_committer);
+        self
+    }
+
+    pub async fn connect(self) -> Result<MyStream, Error> {
+        init_logger();
+
         let destination = format!("{}:{}", self.host.clone(), self.port);
-        println!("目标地址: {}", destination);
-        // 参数异常
+        info!("目标地址: {}", destination);
+        // TODO:参数异常
         let addr: SocketAddr = destination.parse().unwrap();
         let socket = TcpStream::connect(&addr).await?;
 
@@ -112,14 +131,11 @@ impl MySqlOption {
         let (to_server, from_server) = secure_socket.split();
 
         let mut stream = MyStream::new(to_server, from_server, self, capabilities);
+
         stream.establish().await?;
         stream.set_pipes_as_concat().await?;
         stream.set_checksum().await?;
-
         stream.set_binlog_pos().await?;
-
-
-        // stream.notify_listener().await;
 
         Ok(stream)
     }
@@ -180,18 +196,31 @@ pub struct MyStream {
     pub(crate) server_version: (u16, u16, u16),
     table_map: TableMap,
     listener: Listener,
-    binlog_file_name: String,
-    binlog_position: u64,
+    binlog_file_name: Arc<RwLock<String>>,
+    binlog_position: Arc<RwLock<u64>>,
+    log_committer: Arc<Mutex<Box<dyn LogCommitter>>>,
 
 }
 
+fn get_log_committer(option: &MySqlOption) -> impl LogCommitter {
+    if let Some(snapshot_type) = &option.snapshot{
+        match *snapshot_type {
+            SnapShotType::FILE => FileCommitter::default(),
+            _ => unimplemented!()
+        }
+    } else {
+        // TODO
+        unimplemented!()
+    }
 
+}
 impl MyStream {
 
     fn new(to_server: SplitSink<Framed<TcpStream, PacketCodec>, Bytes>,
            from_server: SplitStream<Framed<TcpStream, PacketCodec>>,
            option: MySqlOption,
-           capabilities: Capabilities,) -> Self {
+           capabilities: Capabilities) -> Self {
+        let log_committer = get_log_committer(&option);
         Self {
             to_server,
             from_server,
@@ -202,16 +231,46 @@ impl MyStream {
             server_version: (0, 0, 0),
             table_map: TableMap::default(),
             listener: Listener::default(),
-            binlog_file_name: "".to_owned(),
-            binlog_position: 0,
+            binlog_file_name: Arc::new(RwLock::new("".to_owned())),
+            binlog_position: Arc::new(RwLock::new(0)),
+            log_committer: Arc::new(Mutex::new(Box::new(log_committer)))
         }
     }
+
+
 
     pub fn register_listener(&mut self, listener: Listener) {
         self.listener = listener;
     }
 
+    async fn start_recorder(&mut self) {
+        let mut lock = self.log_committer.lock().unwrap();
+        lock.open().unwrap();
+        // drop(lock);
+        let mut recorder = Arc::clone(&self.log_committer);
+        let mut file_name_lock = Arc::clone(&self.binlog_file_name);
+        let mut log_pos_lock = Arc::clone(&self.binlog_position);
+        tokio::spawn(async move {
+            loop {
+                time::sleep(Duration::from_secs(5)).await;
+
+                let file_name = (&*file_name_lock.read().unwrap().clone()).to_owned();
+                let log_pos = *log_pos_lock.read().unwrap();
+                let r = LogRecord {file_name, log_pos};
+                let mut guard = recorder.lock().unwrap();
+                match guard.commit(r) {
+                    Err(err) => error!("recorder error: {:?}", err),
+                    _ => {}
+                }
+            }
+
+        }).await.unwrap();
+        info!("log recorder successfully!")
+    }
+
     pub async fn start(&mut self) {
+
+        self.start_recorder().await;
         loop {
             match self.next_event().await {
                 Ok(event) => {
@@ -220,18 +279,21 @@ impl MyStream {
                             position,
                             next_binlog,
                             ..
-                        } = &event.body {
+                        } = event.body {
                             (position, next_binlog)
                         } else {
                             unimplemented!()
                         };
-
-                        self.binlog_file_name = next_binlog.clone();
-                        self.binlog_position = *position;
+                        let mut binlog_file_name = self.binlog_file_name.write().unwrap();
+                        binlog_file_name.clear();
+                        binlog_file_name.push_str(next_binlog.clone().as_str());
+                        let mut binlog_position = self.binlog_position.write().unwrap();
+                        *binlog_position = position;
                         continue;
                     } else if event.header.event_type != EventType::TableMapEvent {
                         if event.header.log_pos > 0 {
-                            self.binlog_position = event.header.log_pos as u64;
+                            let mut binlog_position = self.binlog_position.write().unwrap();
+                            *binlog_position = event.header.log_pos as u64;
                         }
                     }
 
@@ -276,7 +338,7 @@ impl MyStream {
 
         // Load snapshot or start from latest offset
 
-        let snapshot = match self.option.log_committer.get_latest_record()? {
+        let snapshot = match self.log_committer.lock().unwrap().get_latest_record()? {
             Some(record) => (Some(record.file_name), Some(record.log_pos)),
             _ => (None, None)
         };
@@ -284,16 +346,15 @@ impl MyStream {
         let com_binlog_dump = match snapshot {
             (Some(f), Some(o)) => {
                 ComBinlogDump {
-                    binlog_pos: o,
+                    binlog_pos: o as u32,
                     server_id: self.option.server_id,
                     binlog_filename: f
                 }
             },
             _ => {
-                println!("从 binlog 最新偏移量消费!");
+                info!("从 binlog 最新偏移量消费!");
 
                 self.send_packet(Query("show master status")).await;
-
                 match self.fetch().await? {
                     Some(row) => {
                         let file_name_bytes = row.get(0).expect("binlog file name parse error");
@@ -306,7 +367,7 @@ impl MyStream {
                         let pos: u32 = pos_bytes.get_str(pos_len)?.parse()?;
                         let gtid_set = from_utf8(&row.get(4).expect("GTID_SET parse error"))?;
 
-                        println!("file_name: {}, pos: {}, gtid_set: {}", file_name.clone(), pos, gtid_set);
+                        info!("file_name: {}, pos: {}, gtid_set: {}", file_name.clone(), pos, gtid_set);
 
                         ComBinlogDump {
                             binlog_pos: pos,
@@ -318,22 +379,26 @@ impl MyStream {
                 }
             }
         };
-        self.binlog_file_name = com_binlog_dump.binlog_filename.clone();
-        self.binlog_position = com_binlog_dump.binlog_pos as u64;
+        self.reset_binlog_info(&com_binlog_dump);
+
         // todo: fetchBinlogChecksum
         // show global variables like 'binlog_checksum'
 
         // enableHeartbeat
-        println!("send COM_BINLOG_DUMP");
+        info!("send COM_BINLOG_DUMP");
         // send COM_BINLOG_DUMP
         self.send_packet(com_binlog_dump).await;
-
         self.maybe_recv_eof().await?;
-
-        self.send_packet(Query("show master status")).await;
-
         Ok(())
 
+    }
+
+    fn reset_binlog_info(&mut self, binlog_info: &ComBinlogDump) {
+        let mut binlog_file_name = self.binlog_file_name.write().unwrap();
+        binlog_file_name.clear();
+        binlog_file_name.push_str(binlog_info.binlog_filename.as_str());
+        let mut binlog_position = self.binlog_position.write().unwrap();
+        *binlog_position = binlog_info.binlog_pos as u64;
     }
 
     async fn fetch(&mut self) -> Result<Option<Row>, Error> {
@@ -550,7 +615,7 @@ impl MyStream {
 
         let bytes = Bytes::from(self.wbuf.to_vec());
         if let Err(e) = self.to_server.send(bytes).await {
-            println!("send packet error: {:?}", e);
+            error!("send packet error: {:?}", e);
         }
         self.wbuf.clear();
     }
@@ -592,7 +657,7 @@ async fn recv_result_metadata(
     columns.reserve(num_columns);
 
     for ordinal in 0..num_columns {
-        let mut pkg = stream.next_packet().await?;
+        let pkg = stream.next_packet().await?;
         let (def, _) = decode_column_def(pkg.0)?;
 
         let column = recv_next_result_column(&def, ordinal)?;

@@ -6,9 +6,9 @@ use rustcdc::snapshot::FileCommitter;
 #[tokio::main]
 async fn main() -> Result<(), Error> {
 
-    let committer = FileCommitter::default();
 
-    let mut stream = MySqlOption::new(Box::new(committer))
+
+    let mut stream = MySqlOption::new()
         .host("127.0.0.1")
         .port(3556)
         .username("root")

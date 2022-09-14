@@ -1,20 +1,19 @@
 use std::fs::{File, OpenOptions};
-use std::{fs, io};
 use std::io::{BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::{PathBuf};
 use std::io::prelude::*;
-use std::str::FromStr;
-use bytes::Bytes;
 use serde::{Serialize, Deserialize};
-use crate::err_parse;
 use crate::error::Error;
 
-
+pub enum SnapShotType {
+    FILE,
+    OTHER
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct LogRecord {
     pub file_name: String,
-    pub log_pos: u32,
+    pub log_pos: u64,
 }
 
 
@@ -129,6 +128,7 @@ fn commit_error(error_msg: &str) -> Error {
 mod tests {
     use std::fs;
     use std::io::BufReader;
+    use crate::err_parse;
     use super::*;
 
     fn del_file(path: &PathBuf) {
@@ -175,7 +175,7 @@ mod tests {
 
         match committer.get_latest_record()? {
             Some(record) => {
-                assert_eq!(record.log_pos, 222 as u32);
+                assert_eq!(record.log_pos, 222 as u64);
                 assert_eq!(record.file_name, "binlog.0000002".to_string());
                 del_file(&committer.path);
                 Ok(())
