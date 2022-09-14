@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::str::from_utf8;
 use std::sync::{Arc, Mutex, RwLock};
@@ -16,8 +17,10 @@ use crate::mysql::io::MySqlBufExt;
 
 use futures::{SinkExt, StreamExt};
 use futures_util::stream::{SplitSink, SplitStream};
-use log::{error, info};
+use log::{error, info, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::runtime::Builder;
+use tokio::task::JoinHandle;
 use tokio::time;
 use crate::{err_parse, err_protocol, init_logger};
 use crate::mysql::error::MySqlDatabaseError;
@@ -136,7 +139,7 @@ impl MySqlOption {
         stream.set_pipes_as_concat().await?;
         stream.set_checksum().await?;
         stream.set_binlog_pos().await?;
-
+        info!("rust cdc connected successfully!");
         Ok(stream)
     }
 
@@ -198,14 +201,14 @@ pub struct MyStream {
     listener: Listener,
     binlog_file_name: Arc<RwLock<String>>,
     binlog_position: Arc<RwLock<u64>>,
-    log_committer: Arc<Mutex<Box<dyn LogCommitter>>>,
+    log_committer: Arc<Mutex<Box<dyn LogCommitter + Send>>>,
 
 }
 
-fn get_log_committer(option: &MySqlOption) -> impl LogCommitter {
+fn get_log_committer(option: &MySqlOption) -> Box<dyn LogCommitter + Send> {
     if let Some(snapshot_type) = &option.snapshot{
         match *snapshot_type {
-            SnapShotType::FILE => FileCommitter::default(),
+            SnapShotType::FILE => Box::new(FileCommitter::default()),
             _ => unimplemented!()
         }
     } else {
@@ -233,7 +236,7 @@ impl MyStream {
             listener: Listener::default(),
             binlog_file_name: Arc::new(RwLock::new("".to_owned())),
             binlog_position: Arc::new(RwLock::new(0)),
-            log_committer: Arc::new(Mutex::new(Box::new(log_committer)))
+            log_committer: Arc::new(Mutex::new(log_committer))
         }
     }
 
@@ -243,34 +246,42 @@ impl MyStream {
         self.listener = listener;
     }
 
-    async fn start_recorder(&mut self) {
+    fn start_recorder(&mut self) -> impl Future<Output=()> {
         let mut lock = self.log_committer.lock().unwrap();
         lock.open().unwrap();
-        // drop(lock);
+        drop(lock);
         let mut recorder = Arc::clone(&self.log_committer);
         let mut file_name_lock = Arc::clone(&self.binlog_file_name);
         let mut log_pos_lock = Arc::clone(&self.binlog_position);
-        tokio::spawn(async move {
+
+        async move {
+            info!("log recorder successfully!");
             loop {
                 time::sleep(Duration::from_secs(5)).await;
-
                 let file_name = (&*file_name_lock.read().unwrap().clone()).to_owned();
                 let log_pos = *log_pos_lock.read().unwrap();
-                let r = LogRecord {file_name, log_pos};
+                let r = LogRecord { file_name, log_pos };
                 let mut guard = recorder.lock().unwrap();
                 match guard.commit(r) {
                     Err(err) => error!("recorder error: {:?}", err),
                     _ => {}
-                }
+                };
             }
-
-        }).await.unwrap();
-        info!("log recorder successfully!")
+            ()
+        }
     }
 
     pub async fn start(&mut self) {
+        // let _task = self.start_recorder().await;
+        let runtime = Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
 
-        self.start_recorder().await;
+        runtime.spawn(self.start_recorder());
+
+        info!("start listen event ...");
         loop {
             match self.next_event().await {
                 Ok(event) => {
@@ -338,9 +349,9 @@ impl MyStream {
 
         // Load snapshot or start from latest offset
 
-        let snapshot = match self.log_committer.lock().unwrap().get_latest_record()? {
-            Some(record) => (Some(record.file_name), Some(record.log_pos)),
-            _ => (None, None)
+        let snapshot = match self.log_committer.lock().unwrap().get_latest_record() {
+            Ok(Some(record)) => (Some(record.file_name), Some(record.log_pos)),
+            _ => (None, None),
         };
 
         let com_binlog_dump = match snapshot {

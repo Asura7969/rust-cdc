@@ -94,6 +94,9 @@ impl LogCommitter for FileCommitter {
         for line in f.lines() {
             latest_line = line.unwrap();
         }
+        if latest_line.is_empty() {
+            return Ok(None)
+        }
         let latest = latest_line.as_bytes();
         let record = LogRecord::from(latest);
         Ok(Some(record))

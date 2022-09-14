@@ -21,7 +21,6 @@ impl Row {
     pub(crate) fn decode_row<'de>(mut buf: Bytes, columns: &'de Vec<ColumnDefinition>) -> Result<Self, Error> {
         let storage = buf.clone();
         let offset = buf.len();
-        println!("storage: {:?}", storage.clone().to_vec());
 
         let mut values = Vec::with_capacity(columns.len());
 
