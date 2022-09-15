@@ -40,6 +40,7 @@ pub struct MySqlOption {
     username: String,
     password: Option<String>,
     database: Option<String>,
+    table: Option<Vec<String>>,
     server_id: u32,
     charset: String,
     collation: Option<String>,
@@ -57,6 +58,7 @@ impl MySqlOption {
             username: String::from("root"),
             password: None,
             database: None,
+            table: None,
             charset: String::from("utf8mb4"),
             server_id: 33675,
             // collation: None,
@@ -89,8 +91,18 @@ impl MySqlOption {
         self
     }
 
-    pub fn database(mut self, database: Option<String>) -> Self {
-        self.database = database;
+    /// database option
+    /// --
+    /// - *: all databases
+    /// - rustcdc.*: Tables with under the rustcdc database
+    /// - rustcdc.test*: Tables with the prefix test under the rustcdc database
+    pub fn database(mut self, database: &str) -> Self {
+        self.database = Some(database.to_owned());
+        self
+    }
+
+    pub fn table(mut self, table: Vec<String>) -> Self {
+        self.table = Some(table);
         self
     }
 

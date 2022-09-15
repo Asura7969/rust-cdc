@@ -2,12 +2,33 @@ extern crate core;
 
 use bit_set::BitSet;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use regex::Regex;
 use rustcdc::*;
 use rustcdc::error::Error;
 use rustcdc::mysql::{ChecksumType, ColValues, Event, Listener, MysqlEvent, MySqlOption, MysqlPayload, RowsEvent, RowType, TableMap};
 use rustcdc::io::buf::BufExt;
 use rustcdc::mysql::ColTypes::{Long, VarChar};
 use rustcdc::mysql::RowType::NewRow;
+
+#[test]
+fn regex_test() {
+    let all_database_regex = Regex::new(r"\\*").unwrap();
+    assert!(all_database_regex.is_match("rustcdc.table"));
+    assert!(all_database_regex.is_match("rustcdc11.table"));
+
+    let all_table_regex = Regex::new(r"rustcdc\.*").unwrap();
+    assert!(all_table_regex.is_match("rustcdc.table"));
+
+    let prefix_table_regex = Regex::new(r"rustcdc\.test*").unwrap();
+    assert!(!prefix_table_regex.is_match("rustcdc.table"));
+    assert!(prefix_table_regex.is_match("rustcdc.test1"));
+
+    let regex = Regex::new(r"database(.)*\.test(.)*").unwrap();
+    assert!(regex.is_match("database.test"));
+    assert!(regex.is_match("database1.test2"));
+    assert!(!regex.is_match("database1.tt"));
+    assert!(!regex.is_match("data.test2"));
+}
 
 #[test]
 fn test_format_desc() {
@@ -154,8 +175,8 @@ fn test_update_rows_v2() {
     let abc = vec![97, 98, 99];
     let xd = vec![120, 100];
 
-    let v = String::from_utf8(abc).unwrap();
-    let v1 = String::from_utf8(xd).unwrap();
+    let v = String::from_utf8(abc.clone()).unwrap();
+    let v1 = String::from_utf8(xd.clone()).unwrap();
     let before = vec![
         ColValues::Long(vec![1, 0, 0, 0]),
         ColValues::VarChar(v.clone()),
