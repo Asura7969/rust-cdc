@@ -28,6 +28,10 @@ fn regex_test() {
     assert!(regex.is_match("database1.test2"));
     assert!(!regex.is_match("database1.tt"));
     assert!(!regex.is_match("data.test2"));
+
+    let all_regex = Regex::new("[\\s\\S]*\\.[\\s\\S]*").unwrap();
+    assert!(all_regex.is_match("database.test"));
+    assert!(all_regex.is_match("data.test2"));
 }
 
 #[test]

@@ -9,7 +9,7 @@ use std::time::Duration;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Encoder, Framed};
-use crate::mysql::{ColumnDefinition, decode_column_def, Event, EventType, MAX_PACKET_SIZE, MysqlEvent, MysqlPayload, TableMap};
+use crate::mysql::{ColumnDefinition, decode_column_def, Event, EventType, MatchStrategy, MAX_PACKET_SIZE, MysqlEvent, MysqlPayload, TableMap};
 use crate::error::Error;
 use crate::mysql::protocol::{Capabilities, Packet};
 use crate::mysql::protocol::response::{EofPacket, Status as crate_Status};
@@ -214,6 +214,7 @@ pub struct MyStream {
     binlog_file_name: Arc<RwLock<String>>,
     binlog_position: Arc<RwLock<u64>>,
     log_committer: Arc<Mutex<Box<dyn LogCommitter + Send>>>,
+    match_strategy: MatchStrategy,
 
 }
 
@@ -236,6 +237,17 @@ impl MyStream {
            option: MySqlOption,
            capabilities: Capabilities) -> Self {
         let log_committer = get_log_committer(&option);
+        let db = match &option.database {
+            Some(db) => db.clone(),
+            None => "*".to_owned()
+        };
+
+        let tables = match &option.table {
+            Some(db) => db.clone(),
+            None => vec!["*".to_owned()]
+        };
+        let match_strategy = MatchStrategy::new(vec![db], tables);
+
         Self {
             to_server,
             from_server,
@@ -248,7 +260,8 @@ impl MyStream {
             listener: Listener::default(),
             binlog_file_name: Arc::new(RwLock::new("".to_owned())),
             binlog_position: Arc::new(RwLock::new(0)),
-            log_committer: Arc::new(Mutex::new(log_committer))
+            log_committer: Arc::new(Mutex::new(log_committer)),
+            match_strategy
         }
     }
 
@@ -318,13 +331,25 @@ impl MyStream {
                             let mut binlog_position = self.binlog_position.write().unwrap();
                             *binlog_position = event.header.log_pos as u64;
                         }
+                        if let MysqlPayload::TableMapEvent {
+                            table_id: _table_id,
+                            schema_name: database,
+                            table,
+                            ..
+                        } = &event.body {
+                            self.match_strategy.hit(database.as_str(), table.as_str());
+                        };
+                    }
+                    if !self.match_strategy.is_skip() {
+                        // send event to listener
+                        (self.listener.fn_read)(event)
                     }
 
-                    // send event to listener
-                    (self.listener.fn_read)(event)
                 },
                 Err(error) => {
-                    (self.listener.fn_err)(error)
+                    if !self.match_strategy.is_skip() {
+                        (self.listener.fn_err)(error)
+                    }
                 }
             }
         }
