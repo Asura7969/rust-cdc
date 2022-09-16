@@ -3,7 +3,7 @@ mod decode;
 pub use decode::ChecksumType;
 pub(crate) use decode::ColumnDefinition;
 pub(crate) use decode::decode_column_def;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use bit_set::BitSet;
 use bytes::{Buf, Bytes};
 use regex::Regex;
@@ -139,23 +139,7 @@ impl Event {
         let event_type = &header.event_type;
         let (event, op_buf) = match &header.event_type {
             EventType::FormatDescriptionEvent => decode_format_desc(body_buf, &header)?,
-            EventType::TableMapEvent => {
-                let (ev, op_buf) = decode_table_map(body_buf)?;
-                match ev.clone() {
-                    MysqlPayload::TableMapEvent {
-                        table_id,
-                        schema_name,
-                        table,
-                        columns,
-                        nullable_bitmap,
-                    } => {
-                        table_map.handle(table_id, schema_name, table, columns);
-                    },
-                    _ => {}
-                }
-
-                (ev, op_buf)
-            },
+            EventType::TableMapEvent => decode_table_map(body_buf)?,
             EventType::PreviousGtidsEvent => decode_previous_gtids(body_buf, &header)?,
             EventType::UnknownEvent => decode_unknown(body_buf)?,
             EventType::HeartbeatEvent => decode_heartbeat(body_buf)?,
@@ -343,7 +327,7 @@ impl EventType {
     }
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
 pub enum ColTypes {
     Decimal,
     Tiny,

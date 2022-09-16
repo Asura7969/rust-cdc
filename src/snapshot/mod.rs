@@ -1,19 +1,27 @@
+use std::cell::Cell;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Write};
 use std::path::{PathBuf};
 use std::io::prelude::*;
 use serde::{Serialize, Deserialize};
 use crate::error::Error;
+use crate::mysql::SingleTableMap;
 
 pub enum SnapShotType {
     FILE,
     OTHER
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LogRecord {
     pub file_name: String,
     pub log_pos: u64,
+}
+
+impl PartialEq for LogRecord {
+    fn eq(&self, other: &Self) -> bool {
+        self.file_name.eq(&other.file_name) && self.log_pos == other.log_pos
+    }
 }
 
 
@@ -31,7 +39,9 @@ pub trait LogCommitter {
 
     fn get_latest_record(&mut self) -> Result<Option<LogRecord>, Error>;
 
-    /// commit processed log offset
+    fn persist_table_metadata(&mut self, table_map: SingleTableMap) -> Result<(), Error>;
+
+    /// commit processed log offset, If it is the same Log Record, it will not be persisted
     fn commit(&mut self, record: LogRecord) -> Result<(), Error>;
 
     /// release resource
@@ -43,7 +53,8 @@ const NEW_LINE: &str = "\n";
 
 pub struct FileCommitter {
     path: PathBuf,
-    writer: Option<File>
+    writer: Option<File>,
+    newest: Option<LogRecord>,
 }
 
 impl FileCommitter {
@@ -58,7 +69,7 @@ impl FileCommitter {
             commit_error("file-committer initialization failed, need path, not file");
         };
 
-        Ok(Self { path, writer: None })
+        Ok(Self { path, writer: None, newest: None })
     }
 }
 
@@ -68,7 +79,7 @@ impl Default for FileCommitter {
         let mut path = std::env::current_dir().unwrap();
         path.push(COMMIT_FILE_NAME);
         let _ = File::create(path.clone());
-        Self { path, writer: None }
+        Self { path, writer: None, newest: None }
     }
 }
 
@@ -99,10 +110,21 @@ impl LogCommitter for FileCommitter {
         }
         let latest = latest_line.as_bytes();
         let record = LogRecord::from(latest);
+        self.newest = Some(record.clone());
         Ok(Some(record))
     }
 
-    fn commit(&mut self, mut record: LogRecord) -> Result<(), Error> {
+    fn persist_table_metadata(&mut self, table_map: SingleTableMap) -> Result<(), Error> {
+        todo!()
+    }
+
+    fn commit(&mut self, record: LogRecord) -> Result<(), Error> {
+        match &self.newest {
+            Some(record) if record.eq(&record) => {
+                return Ok(())
+            },
+            _ => {}
+        }
         let mut record = serde_json::to_string(&record).unwrap();
         record.push_str(NEW_LINE);
         let _ = self.writer.as_ref().ok_or(commit_error("file not open!"))?
@@ -133,6 +155,18 @@ mod tests {
     use std::io::BufReader;
     use crate::err_parse;
     use super::*;
+
+    #[test]
+    fn eq_log_record() {
+        let record1 = LogRecord { file_name: String::from("binlog.0000001"), log_pos: 1 as u64 };
+        let record2 = LogRecord { file_name: String::from("binlog.0000002"), log_pos: 1 as u64 };
+        let record3 = LogRecord { file_name: String::from("binlog.0000002"), log_pos: 2 as u64 };
+        let record4 = LogRecord { file_name: String::from("binlog.0000002"), log_pos: 2 as u64 };
+
+        assert_ne!(record1, record2);
+        assert_ne!(record2, record3);
+        assert_eq!(record3, record4);
+    }
 
     fn del_file(path: &PathBuf) {
         let _ = fs::remove_file(path).unwrap();

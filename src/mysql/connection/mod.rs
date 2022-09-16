@@ -1,19 +1,14 @@
+mod stream;
+mod auth;
+
 use std::collections::BTreeMap;
-// use crate::common::StatementCache;
-// use crate::connection::{Connection, LogSettings};
 use crate::error::Error;
-// use crate::mysql::protocol::statement::StmtClose;
 use crate::mysql::protocol::text::{Ping, Quit};
-// use crate::mysql::statement::MySqlStatementMetadata;
-// use crate::mysql::{MySql, MySqlConnectOptions};
-// use crate::transaction::Transaction;
 use futures_core::future::BoxFuture;
 use futures_util::FutureExt;
 use std::fmt::{self, Debug, Formatter};
 use tokio::io::AsyncWriteExt;
-
-mod stream;
-mod auth;
+use serde::{Serialize, Deserialize};
 
 pub(crate) use stream::{MySqlStream};
 use crate::mysql::event::{ColTypes};
@@ -34,13 +29,15 @@ pub struct MySqlConnection {
 
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SingleTableMap {
+    pub(crate) table_id: u64,
     pub(crate) schema_name: String,
     pub(crate) table_name: String,
     pub(crate) columns: Vec<ColTypes>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TableMap {
     inner: BTreeMap<u64, SingleTableMap>,
 }
@@ -64,13 +61,16 @@ impl TableMap {
         schema_name: String,
         table_name: String,
         columns: Vec<ColTypes>,
-    ) {
+    ) -> SingleTableMap {
         let map = SingleTableMap {
+            table_id,
             schema_name,
             table_name,
             columns,
         };
-        self.inner.insert(table_id, map);
+
+        self.inner.insert(table_id, map.clone());
+        map
     }
 
     pub fn get(&self, table_id: u64) -> Option<&SingleTableMap> {

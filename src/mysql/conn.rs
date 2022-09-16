@@ -297,7 +297,6 @@ impl MyStream {
     }
 
     pub async fn start(&mut self) {
-        // let _task = self.start_recorder().await;
         let runtime = Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
@@ -332,12 +331,19 @@ impl MyStream {
                             *binlog_position = event.header.log_pos as u64;
                         }
                         if let MysqlPayload::TableMapEvent {
-                            table_id: _table_id,
+                            table_id,
                             schema_name: database,
                             table,
+                            columns,
                             ..
                         } = &event.body {
                             self.match_strategy.hit(database.as_str(), table.as_str());
+                            let table_map = self.table_map.handle(*table_id, database.clone(), table.clone(), columns.clone());
+                            let mut committer = self.log_committer.lock().unwrap();
+                            if let Err(error) = committer.persist_table_metadata(table_map) {
+                                error!("table metadata persist error: {:?}\n table_id: {}", error, table_id);
+                            }
+                            drop(committer);
                         };
                     }
                     if !self.match_strategy.is_skip() {
@@ -385,7 +391,6 @@ impl MyStream {
     pub(crate) async fn set_binlog_pos(&mut self) -> Result<(), Error> {
 
         // Load snapshot or start from latest offset
-
         let snapshot = match self.log_committer.lock().unwrap().get_latest_record() {
             Ok(Some(record)) => (Some(record.file_name), Some(record.log_pos)),
             _ => (None, None),

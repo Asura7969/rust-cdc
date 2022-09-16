@@ -12,7 +12,7 @@ async fn main() -> Result<(), Error> {
         .username("root")
         .password(None)
         .database("rustcdc")
-        .table(vec!["*".to_string()]) // all tables
+        .table(vec!["rustcdc1".to_string()]) // all tables
         .charset("utf8mb4")
         .server_id(5)
         .snapshot(SnapShotType::FILE) // default
