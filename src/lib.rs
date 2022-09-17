@@ -5,6 +5,7 @@ use chrono::Local;
 use log::LevelFilter;
 use std::io::prelude::*;
 
+pub mod delta;
 pub mod mysql;
 pub mod io;
 pub(crate) mod net;
