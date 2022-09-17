@@ -10,7 +10,7 @@ use regex::Regex;
 use uuid::Uuid;
 use crate::err_protocol;
 use crate::error::Error;
-use crate::io::{BufExt, Decode};
+use crate::io::BufExt;
 use crate::mysql::connection::TableMap;
 use crate::mysql::event::decode::*;
 use crate::mysql::io::MySqlBufExt;

@@ -73,6 +73,12 @@ impl TableMap {
         map
     }
 
+    pub fn add_table(&mut self,
+                     table_id: u64,
+                     table: SingleTableMap) {
+        self.inner.insert(table_id, table);
+    }
+
     pub fn get(&self, table_id: u64) -> Option<&SingleTableMap> {
         self.inner.get(&table_id)
     }

@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::fmt::Write;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::str::from_utf8;
@@ -30,7 +29,7 @@ use crate::mysql::collation::{CharSet, Collation};
 use crate::mysql::protocol::connect::{AuthSwitchRequest, AuthSwitchResponse, BinlogFilenameAndPosition, ComBinlogDump, Handshake, HandshakeResponse};
 use crate::mysql::protocol::row::Row;
 use crate::mysql::protocol::text::{Ping, Query};
-use crate::snapshot::{FileCommitter, LogCommitter, LogRecord, SnapShotType};
+use crate::snapshot::{FileCommitter, LogCommitter, SnapShotType};
 
 const MAX_BLOCK_LENGTH: usize = 16777212;
 
@@ -211,8 +210,7 @@ pub struct MyStream {
     pub(crate) server_version: (u16, u16, u16),
     table_map: TableMap,
     listener: Listener,
-    binlog_file_name: Arc<RwLock<String>>,
-    binlog_position: Arc<RwLock<u64>>,
+    binlog_file_name: String,
     log_committer: Arc<Mutex<Box<dyn LogCommitter + Send>>>,
     match_strategy: MatchStrategy,
 
@@ -258,8 +256,7 @@ impl MyStream {
             server_version: (0, 0, 0),
             table_map: TableMap::default(),
             listener: Listener::default(),
-            binlog_file_name: Arc::new(RwLock::new("".to_owned())),
-            binlog_position: Arc::new(RwLock::new(0)),
+            binlog_file_name: "".to_owned(),
             log_committer: Arc::new(Mutex::new(log_committer)),
             match_strategy
         }
@@ -276,18 +273,18 @@ impl MyStream {
         lock.open().unwrap();
         drop(lock);
         let mut recorder = Arc::clone(&self.log_committer);
-        let mut file_name_lock = Arc::clone(&self.binlog_file_name);
-        let mut log_pos_lock = Arc::clone(&self.binlog_position);
+        // let mut file_name_lock = Arc::clone(&self.binlog_file_name);
+        // let mut log_pos_lock = Arc::clone(&self.binlog_position);
 
         async move {
             info!("log recorder successfully!");
             loop {
                 time::sleep(Duration::from_secs(5)).await;
-                let file_name = (&*file_name_lock.read().unwrap().clone()).to_owned();
-                let log_pos = *log_pos_lock.read().unwrap();
-                let r = LogRecord { file_name, log_pos };
+                // let file_name = (&*file_name_lock.read().unwrap().clone());
+                // let log_pos = *log_pos_lock.read().unwrap();
+                // let r = LogEntry::new(file_name, log_pos);
                 let mut guard = recorder.lock().unwrap();
-                match guard.commit(r) {
+                match guard.commit() {
                     Err(err) => error!("recorder error: {:?}", err),
                     _ => {}
                 };
@@ -319,16 +316,13 @@ impl MyStream {
                         } else {
                             unimplemented!()
                         };
-                        let mut binlog_file_name = self.binlog_file_name.write().unwrap();
-                        binlog_file_name.clear();
-                        binlog_file_name.push_str(next_binlog.clone().as_str());
-                        let mut binlog_position = self.binlog_position.write().unwrap();
-                        *binlog_position = position;
+
+                        self.binlog_file_name = next_binlog.clone();
+                        self.recode_binlog(position);
                         continue;
                     } else if event.header.event_type != EventType::TableMapEvent {
                         if event.header.log_pos > 0 {
-                            let mut binlog_position = self.binlog_position.write().unwrap();
-                            *binlog_position = event.header.log_pos as u64;
+                            self.recode_binlog(event.header.log_pos as u64);
                         }
                         if let MysqlPayload::TableMapEvent {
                             table_id,
@@ -339,11 +333,11 @@ impl MyStream {
                         } = &event.body {
                             self.match_strategy.hit(database.as_str(), table.as_str());
                             let table_map = self.table_map.handle(*table_id, database.clone(), table.clone(), columns.clone());
-                            let mut committer = self.log_committer.lock().unwrap();
-                            if let Err(error) = committer.persist_table_metadata(table_map) {
-                                error!("table metadata persist error: {:?}\n table_id: {}", error, table_id);
+                            let mut recorder_lock = self.log_committer.lock().unwrap();
+                            if let Err(error) = recorder_lock.recode_table_metadata(table_map) {
+                                error!("recode table metadata error: {:?}\n table_id: {}", error, table_id);
                             }
-                            drop(committer);
+                            drop(recorder_lock);
                         };
                     }
                     if !self.match_strategy.is_skip() {
@@ -358,6 +352,14 @@ impl MyStream {
                     }
                 }
             }
+        }
+    }
+
+    pub(crate) fn recode_binlog(&mut self, log_pos: u64) {
+        let next_binlog = self.binlog_file_name.clone();
+        let mut recorder_lock = self.log_committer.lock().unwrap();
+        if let Err(error) = recorder_lock.recode_binlog(next_binlog.clone(), log_pos) {
+            error!("recode binlog-metadata error: {:?}\n binlog: {}, pos: {}", error, next_binlog, log_pos);
         }
     }
 
@@ -392,7 +394,13 @@ impl MyStream {
 
         // Load snapshot or start from latest offset
         let snapshot = match self.log_committer.lock().unwrap().get_latest_record() {
-            Ok(Some(record)) => (Some(record.file_name), Some(record.log_pos)),
+            Ok(Some(log_entry)) => {
+                for (id, table) in &log_entry.tables {
+                    self.table_map.add_table(*id, table.clone());
+                }
+
+                (Some(log_entry.file_name), Some(log_entry.log_pos))
+            },
             _ => (None, None),
         };
 
@@ -422,6 +430,9 @@ impl MyStream {
 
                         info!("file_name: {}, pos: {}, gtid_set: {}", file_name.clone(), pos, gtid_set);
 
+                        self.binlog_file_name = file_name.clone().to_string();
+                        self.recode_binlog(pos as u64);
+
                         ComBinlogDump {
                             binlog_pos: pos,
                             server_id: self.option.server_id,
@@ -432,7 +443,6 @@ impl MyStream {
                 }
             }
         };
-        self.reset_binlog_info(&com_binlog_dump);
 
         // todo: fetchBinlogChecksum
         // show global variables like 'binlog_checksum'
@@ -444,14 +454,6 @@ impl MyStream {
         self.maybe_recv_eof().await?;
         Ok(())
 
-    }
-
-    fn reset_binlog_info(&mut self, binlog_info: &ComBinlogDump) {
-        let mut binlog_file_name = self.binlog_file_name.write().unwrap();
-        binlog_file_name.clear();
-        binlog_file_name.push_str(binlog_info.binlog_filename.as_str());
-        let mut binlog_position = self.binlog_position.write().unwrap();
-        *binlog_position = binlog_info.binlog_pos as u64;
     }
 
     async fn fetch(&mut self) -> Result<Option<Row>, Error> {
