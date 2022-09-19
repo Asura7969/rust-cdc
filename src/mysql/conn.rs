@@ -220,6 +220,7 @@ fn get_log_committer(option: &MySqlOption) -> Box<dyn LogCommitter + Send> {
     if let Some(snapshot_type) = &option.snapshot{
         match *snapshot_type {
             SnapShotType::FILE => Box::new(FileCommitter::default()),
+            SnapShotType::ROCKSDB => Box::new(RocksDBCommitter::default()),
             _ => unimplemented!()
         }
     } else {

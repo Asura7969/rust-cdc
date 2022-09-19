@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use log::warn;
 use rocksdb::{DB, DBPath, DBWithThreadMode, Options, SingleThreaded};
 use crate::error::Error;
@@ -7,14 +8,22 @@ use crate::snapshot::{LogCommitter, LogEntry};
 const METADATA_KEY: &str = "";
 
 pub struct RocksDBCommitter {
-    path: String,
+    path: PathBuf,
     db: Option<DBWithThreadMode<SingleThreaded>>,
     newest: LogEntry,
 }
 
 impl RocksDBCommitter {
     fn new(path: &str) -> Self {
-        Self { path: path.to_string(), db: None, newest: LogEntry::default() }
+        let mut path = PathBuf::from(path);
+        Self { path, db: None, newest: LogEntry::default() }
+    }
+}
+
+impl Default for RocksDBCommitter {
+    fn default() -> Self {
+        let mut path = std::env::current_dir().unwrap();
+        Self { path, db: None, newest: LogEntry::default() }
     }
 }
 
@@ -70,5 +79,31 @@ impl LogCommitter for RocksDBCommitter {
             Err(err) => Err(Error::BackendErr(err.to_string()))
         }
 
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::snapshot::{LogCommitter, LogEntry};
+
+    #[test]
+    fn commit_test() {
+        let mut committer = RocksDBCommitter::default();
+
+        committer.open().unwrap();
+
+        committer.recode_binlog("binlog.0000001".to_string(), 111).unwrap();
+        committer.commit().unwrap();
+        committer.recode_binlog("binlog.0000002".to_string(), 222).unwrap();
+        committer.commit().unwrap();
+
+        if let Ok(Some(log)) = committer.get_latest_record() {
+            assert_eq!(log.file_name, "binlog.0000002");
+            assert_eq!(log.log_pos, 222);
+        }
+
+        committer.close().unwrap();
     }
 }

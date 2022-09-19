@@ -231,7 +231,7 @@ impl From<serde_json::Error> for Error {
 
 impl From<rocksdb::Error> for Error {
     fn from(error: rocksdb::Error) -> Self {
-        Error::BackendErr(error.into_string())
+        Error::BackendErr(error.to_string())
     }
 }
 

@@ -39,5 +39,6 @@ chrono = "0"
 deltalake = "0.4.0"
 
 [dependencies.rocksdb]
+version = "0.18.0"
 default-features = false
 features = ["lz4"]
