@@ -93,8 +93,10 @@ pub enum Error {
     RuntimeErr(Utf8Error),
 
     #[error("runtime error")]
-    CommitterErr(String)
+    CommitterErr(String),
 
+    #[error("committer error")]
+    BackendErr(String)
 
 }
 
@@ -224,6 +226,12 @@ impl From<ParseIntError> for Error {
 impl From<serde_json::Error> for Error {
     fn from(error: serde_json::Error) -> Self {
         Error::parse(error)
+    }
+}
+
+impl From<rocksdb::Error> for Error {
+    fn from(error: rocksdb::Error) -> Self {
+        Error::BackendErr(error.into_string())
     }
 }
 
