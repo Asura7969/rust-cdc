@@ -1,6 +1,8 @@
 mod rocksdb_backend;
 mod file_backend;
 
+pub use file_backend::*;
+pub use rocksdb_backend::*;
 
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
@@ -75,6 +77,7 @@ pub trait LogCommitter {
 }
 
 pub(crate) const COMMIT_FILE_NAME: &str = "__commit_offset__.json";
+pub(crate) const COMMIT_PATH: &str = "__commit_offset__";
 
 
 

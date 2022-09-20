@@ -29,7 +29,7 @@ use crate::mysql::collation::{CharSet, Collation};
 use crate::mysql::protocol::connect::{AuthSwitchRequest, AuthSwitchResponse, BinlogFilenameAndPosition, ComBinlogDump, Handshake, HandshakeResponse};
 use crate::mysql::protocol::row::Row;
 use crate::mysql::protocol::text::{Ping, Query};
-use crate::snapshot::{FileCommitter, LogCommitter, SnapShotType};
+use crate::snapshot::{FileCommitter, LogCommitter, RocksDBCommitter, SnapShotType};
 
 const MAX_BLOCK_LENGTH: usize = 16777212;
 

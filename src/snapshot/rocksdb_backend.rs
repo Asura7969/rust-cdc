@@ -3,7 +3,7 @@ use log::warn;
 use rocksdb::{DB, DBPath, DBWithThreadMode, Options, SingleThreaded};
 use crate::error::Error;
 use crate::mysql::SingleTableMap;
-use crate::snapshot::{LogCommitter, LogEntry};
+use crate::snapshot::{COMMIT_PATH, LogCommitter, LogEntry};
 
 const METADATA_KEY: &str = "";
 
@@ -23,6 +23,7 @@ impl RocksDBCommitter {
 impl Default for RocksDBCommitter {
     fn default() -> Self {
         let mut path = std::env::current_dir().unwrap();
+        path.push(COMMIT_PATH);
         Self { path, db: None, newest: LogEntry::default() }
     }
 }
@@ -30,7 +31,7 @@ impl Default for RocksDBCommitter {
 
 impl LogCommitter for RocksDBCommitter {
     fn open(&mut self) -> Result<(), Error> {
-        let db = DB::open_default(self.path.as_str())?;
+        let db = DB::open_default(self.path.as_os_str())?;
         self.db = Some(db);
         Ok(())
     }
@@ -74,10 +75,11 @@ impl LogCommitter for RocksDBCommitter {
     }
 
     fn close(&mut self) -> Result<(), Error> {
-        match DB::destroy(&Options::default(), &self.path) {
-            Ok(_) => Ok(()),
-            Err(err) => Err(Error::BackendErr(err.to_string()))
+        if let Some(db) = &self.db {
+            drop(db);
+            self.db = None
         }
+        Ok(())
 
     }
 }
@@ -87,6 +89,19 @@ impl LogCommitter for RocksDBCommitter {
 mod tests {
     use super::*;
     use crate::snapshot::{LogCommitter, LogEntry};
+
+    #[test]
+    fn load_history() {
+        let mut committer = RocksDBCommitter::new("E:\\rustProject\\rust-cdc\\__commit_offset__");
+        committer.open().unwrap();
+
+        if let Ok(Some(log)) = committer.get_latest_record() {
+            assert_eq!(log.file_name, "binlog.0000002");
+            assert_eq!(log.log_pos, 222);
+        }
+
+        committer.close().unwrap();
+    }
 
     #[test]
     fn commit_test() {
