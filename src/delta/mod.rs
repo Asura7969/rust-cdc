@@ -12,12 +12,13 @@ mod tests {
     use deltalake::writer::{DeltaWriter, RecordBatchWriter};
     use deltalake::writer::test_utils::get_record_batch;
 
-    #[test]
-    fn open_table() {
-        let table_uri = "file:///foo/bar";
-
+    #[tokio::test]
+    async fn open_table() {
+        // let table_uri = "file:///foo/bar";
+        let table_dir = tempfile::tempdir().unwrap();
+        let table_path = table_dir.path();
         let config = HashMap::new();
-        let backend: Arc<DeltaObjectStore> = DeltaTableBuilder::from_uri(table_uri)
+        let backend: Arc<DeltaObjectStore> = DeltaTableBuilder::from_uri(table_path)
             .with_storage_options(config)
             .build_storage()
             .unwrap();
