@@ -7,7 +7,7 @@ use crate::err_parse;
 use crate::error::Error;
 use crate::io::BufExt;
 use crate::mysql::event::{EventType, ColTypes};
-use crate::mysql::{ColValues, EventHeaderV4, has_buf, MysqlEvent, RowType, RowsEvent, SingleTableMap, TableMap, replace_note, MysqlPayload};
+use crate::mysql::{ColValues, EventHeaderV4, has_buf, MysqlEvent, RowType, RowsEvent, SingleTableMap, TableMap, replace_note, MysqlPayload, IntVarEventType, UserVarType};
 use crate::mysql::io::MySqlBufExt;
 
 
@@ -128,6 +128,75 @@ pub(crate) fn decode_query(mut buf: Bytes,
     }, has_buf(buf)))
 }
 
+pub(crate) fn decode_user_var(mut buf: Bytes,) -> Result<(MysqlPayload, Option<Bytes>), Error> {
+    let name_length = buf.get_u32_le();
+    let name = buf.get_str(name_length as usize)?;
+    let is_null = buf.get_u8() == 1;
+    if is_null {
+        let checksum = buf.get_u32_le();
+        Ok((MysqlPayload::UserVarEvent {
+            name_length,
+            name,
+            is_null,
+            d_type: None,
+            charset: None,
+            value_length: None,
+            value: None,
+            flags: None,
+            checksum,
+        }, has_buf(buf)))
+    } else {
+        let d_type = match buf.get_u8() {
+            0 => Some(UserVarType::STRING),
+            1 => Some(UserVarType::REAL),
+            2 => Some(UserVarType::INT),
+            3 => Some(UserVarType::ROW),
+            4 => Some(UserVarType::DECIMAL),
+            5 => Some(UserVarType::VALUE_TYPE_COUNT),
+            _ => Some(UserVarType::Unknown),
+        };
+        let charset: Option<u32> = Some(buf.get_u32_le());
+        let value_length = buf.get_u32_le();
+        let value = buf.get_bytes(value_length as usize).to_vec();
+        let flags = match d_type.clone().unwrap() {
+            UserVarType::INT if buf.has_remaining() => {
+                let flags = buf.get_u8();
+                Some(flags)
+            }
+            _ => None,
+        };
+        let checksum = buf.get_u32_le();
+        Ok((MysqlPayload::UserVarEvent {
+            name,
+            name_length,
+            is_null,
+            d_type,
+            charset,
+            value_length: Some(value_length),
+            value: Some(value),
+            flags,
+            checksum,
+        }, has_buf(buf)))
+    }
+}
+
+
+pub(crate) fn decode_intvar(mut buf: Bytes,) -> Result<(MysqlPayload, Option<Bytes>), Error> {
+    let e_type = match buf.get_u8() {
+        0x00 => IntVarEventType::InvalidIntEvent,
+        0x01 => IntVarEventType::LastInsertIdEvent,
+        0x02 => IntVarEventType::InsertIdEvent,
+        _ => unreachable!(),
+    };
+    let value = buf.get_u64_le();
+    let checksum = buf.get_u32_le();
+    Ok((MysqlPayload::IntVarEvent {
+        e_type,
+        value,
+        checksum,
+    }, has_buf(buf)))
+
+}
 pub(crate) fn decode_rotate(mut buf: Bytes,
                             header: &EventHeaderV4) -> Result<(MysqlPayload, Option<Bytes>), Error> {
     let position = buf.get_u64_le();

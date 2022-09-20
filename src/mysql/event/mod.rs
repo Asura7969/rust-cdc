@@ -56,6 +56,25 @@ pub enum MysqlPayload {
         next_binlog: String,
         checksum: u32,
     },
+    // ref: https://dev.mysql.com/doc/internals/en/user-var-event.html
+    // source: https://github.com/mysql/mysql-server/blob/a394a7e17744a70509be5d3f1fd73f8779a31424/libbinlogevents/include/statement_events.h#L712-L779
+    // NOTE ref is broken !!!
+    UserVarEvent {
+        name_length: u32,
+        name: String,
+        is_null: bool,
+        d_type: Option<UserVarType>,
+        charset: Option<u32>,
+        value_length: Option<u32>,
+        value: Option<Vec<u8>>,
+        flags: Option<u8>,
+        checksum: u32,
+    },
+    IntVarEvent {
+        e_type: IntVarEventType,
+        value: u64,
+        checksum: u32,
+    },
     PreviousGtidsEvent {
         // TODO do more specify parse
         gtid_sets: Vec<u8>,
@@ -104,6 +123,24 @@ pub struct MysqlEvent {
 }
 
 
+#[derive(Debug, Serialize, PartialEq, Eq, Clone)]
+pub enum IntVarEventType {
+    InvalidIntEvent,
+    LastInsertIdEvent,
+    InsertIdEvent,
+}
+
+#[derive(Debug, PartialEq, Serialize, Clone)]
+pub enum UserVarType {
+    STRING = 0,
+    REAL = 1,
+    INT = 2,
+    ROW = 3,
+    DECIMAL = 4,
+    VALUE_TYPE_COUNT = 5,
+    Unknown,
+}
+
 pub struct Event {
 }
 
@@ -148,6 +185,8 @@ impl Event {
             EventType::QueryEvent => decode_query(body_buf, &header)?,
             EventType::XidEvent => decode_xid(body_buf)?,
             EventType::RotateEvent => decode_rotate(body_buf, &header)?,
+            EventType::IntvarEvent => decode_intvar(body_buf)?,
+            EventType::UserVarEvent => decode_user_var(body_buf)?,
             EventType::WriteRowsEventV1
             | EventType::WriteRowsEventV2 =>
                 decode_write_row(body_buf,  event_type, Some(table_map))?,
