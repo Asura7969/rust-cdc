@@ -1,3 +1,4 @@
 /target
 Cargo.lock
 .idea
+delta_table_test
