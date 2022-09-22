@@ -40,10 +40,11 @@ chrono = "0"
 deltalake = { git = "https://github.com/delta-io/delta-rs.git" }
 once_cell = "1.14.0"
 arrow = { version = "22" }
-parquet = { version = "22", features = ["async"], optional = true }
-parquet2 = { version = "0.16", optional = true }
+parquet = { version = "22" }
+parquet2 = { version = "0.16" }
 parquet-format = { version = "~4.0.0" }
-datafusion = { git = "https://github.com/apache/arrow-datafusion.git", rev = "07bc2c754805f536fe1cd873dbe6adfc0a21cbb3" }
+#datafusion = { git = "https://github.com/apache/arrow-datafusion.git", rev = "07bc2c754805f536fe1cd873dbe6adfc0a21cbb3" }
+datafusion = "12.0.0"
 #[features]
 #default = ["arrow", "parquet"]
 #datafusion-ext = [

@@ -9,17 +9,20 @@ use arrow::json;
 mod tests {
     use std::collections::HashMap;
     use std::fs::File;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use super::*;
     use deltalake::{action, DeltaTable, DeltaTableBuilder, DeltaTableConfig, DeltaTableMetaData, SchemaDataType, SchemaField};
     use arrow::record_batch::RecordBatch;
+    use datafusion::prelude::{ParquetReadOptions, SessionContext};
     use deltalake::action::{Action, Add, Remove};
     use deltalake::storage::DeltaObjectStore;
     use deltalake::writer::{DeltaWriter, RecordBatchWriter};
+    use parquet2::FallibleStreamingIterator;
     use parquet::file::serialized_reader::SerializedFileReader;
     use serde_json::{Map, Value};
     use parquet::file::reader::FileReader;
-    use datafusion::execution::context::ExecutionContext;
+    // use datafusion::execution::context::ExecutionContext;
 
     const TABLE_PATH:&str = "file:///E:/rustProject/rust-cdc/delta_table_test";
 
@@ -66,11 +69,14 @@ mod tests {
         let mut writer = RecordBatchWriter::for_table(&table).unwrap();
 
         if let Err(error) = writer.write(batch).await {
-            panic!(error)
+            panic!("{:?}", error)
         }
         let add_actions = writer.flush().await.unwrap();
         let add = &add_actions[0];
-        let path = table_dir.path().join(&add.path);
+
+        let mut table_path = PathBuf::from(table.table_uri());
+
+        let path = table_path.join(&add.path);
 
         let file = File::open(path.as_path()).unwrap();
         let reader = SerializedFileReader::new(file).unwrap();
@@ -89,13 +95,38 @@ mod tests {
     #[tokio::test]
     async fn load_table() {
         let mut table = deltalake::open_table(TABLE_PATH).await.unwrap();
-        let mut ctx = ExecutionContext::new();
-        ctx.register_table("demo", Arc::new(table)).unwrap();
 
-        let batches = ctx
-            .sql("SELECT * FROM demo").await.unwrap()
-            .collect()
+        let files_urls = table.get_file_uris().collect::<Vec<_>>();
+        println!("{}", table);
+
+        // let mut ctx = ExecutionContext::new();
+        // ctx.register_table("demo", Arc::new(table)).unwrap();
+        // let mut ctx = ExecutionContext::new();
+        // ctx.register_table("demo", Arc::new(table)).unwrap();
+        //
+        // let batches = ctx
+        //     .sql("SELECT * FROM demo").await.unwrap()
+        //     .collect()
+        //     .await.unwrap();
+        // println!("{:?}", batches[0])
+
+        let mut ctx = SessionContext::new();
+
+        ctx.register_parquet(
+            "test_delta",
+            &format!("{}{}", TABLE_PATH, "/part-00000-794120c4-3d2d-4ba9-b820-e09f2b0ae444-c000.snappy.parquet"),
+            ParquetReadOptions::default(),
+        ).await.unwrap();
+
+        // execute the query
+        let df = ctx
+            .sql("SELECT * FROM test_delta",)
             .await.unwrap();
+
+        // print the results
+        df.show().await.unwrap();
+
+
     }
 
 
