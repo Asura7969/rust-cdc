@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use crate::error::Error;
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, write};
 use std::io::{BufReader, Write};
 use std::io::prelude::*;
 
@@ -68,10 +68,11 @@ impl LogCommitter for FileCommitter {
 
     fn commit(&mut self) -> Result<(), Error> {
         let mut record = serde_json::to_string(&self.newest).unwrap();
-
         let mut file = OpenOptions::new()
             .truncate(true)
             .read(true)
+            .create(true)
+            .write(true)
             .open(&self.path)?;
 
         file.write(record.as_bytes())?;
