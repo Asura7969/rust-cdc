@@ -1,33 +1,86 @@
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use arrow::array::{StringArray, UInt16Array};
 use arrow::array::Int32Array;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::json;
+use deltalake::{action, checkpoints, DeltaDataTypeVersion, DeltaTable, DeltaTableBuilder, DeltaTableConfig, DeltaTableMetaData, SchemaDataType, SchemaField};
+use arrow::record_batch::RecordBatch;
+use datafusion::datasource::file_format::parquet::{DEFAULT_PARQUET_EXTENSION, ParquetFormat};
+use datafusion::datasource::listing::ListingOptions;
+use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use datafusion::sql::parser::DFParser;
+use deltalake::action::{Action, Add, Remove};
+use deltalake::checkpoints::CheckpointError;
+use deltalake::storage::DeltaObjectStore;
+use deltalake::writer::{DeltaWriter, RecordBatchWriter};
+use parquet2::FallibleStreamingIterator;
+use parquet::file::serialized_reader::SerializedFileReader;
+use serde_json::{Map, Value};
+use parquet::file::reader::FileReader;
+use parquet::schema::types::Type;
 use sqlparser::ast::{AlterTableOperation, ColumnDef, Ident, ObjectName};
 use sqlparser::ast::AlterTableOperation::{AddColumn, DropColumn, RenameColumn, RenameTable};
-use sqlparser::ast::Statement::AlterTable;
+use sqlparser::ast::Statement::{AlterTable, Drop};
 
+
+/// [delta schema]
+///
+/// [delta schema]: https://github.com/delta-io/delta/blob/master/PROTOCOL.md#Schema-Serialization-Format
+pub enum DeltaStructType {
+    String(bool),
+    Long(bool),
+    Integer(bool),
+    Short(bool),
+    Byte(bool),
+    Float(bool),
+    Double(bool),
+    Decimal(bool),
+    Boolean(bool),
+    Binary(bool),
+    Date(bool),
+    Timestamp(bool),
+    Array(DeltaStructType, bool),
+    Map(DeltaStructType, DeltaStructType, bool),
+}
+
+
+
+/// table_uri: column_name -> column_type
+pub fn create_delta_schema(table_schema: &HashMap<String, DeltaStructType>) -> deltalake::Schema {
+    let fields = table_schema.iter().map(|(column_name, column_type)| {
+        let field_name = column_name.clone();
+        let (c_type, nullable) = match column_type {
+            DeltaStructType::String(nullable) => ("string".to_string(), *nullable),
+            DeltaStructType::Long(nullable) => ("long".to_string(), *nullable),
+            DeltaStructType::Integer(nullable) => ("integer".to_string(), *nullable),
+            DeltaStructType::Short(nullable) => ("short".to_string(), *nullable),
+            DeltaStructType::Byte(nullable) => ("byte".to_string(), *nullable),
+            DeltaStructType::Float(nullable) => ("float".to_string(), *nullable),
+            DeltaStructType::Double(nullable) => ("double".to_string(), *nullable),
+            DeltaStructType::Decimal(nullable) => ("decimal".to_string(), *nullable),
+            DeltaStructType::Boolean(nullable) => ("boolean".to_string(), *nullable),
+            DeltaStructType::Binary(nullable) => ("binary".to_string(), *nullable),
+            DeltaStructType::Date(nullable) => ("date".to_string(), *nullable),
+            DeltaStructType::Timestamp(nullable) => ("timestamp".to_string(), *nullable),
+            _ => {
+                todo!()
+            }
+            // DeltaStructType::Array(nullable) => ("array".to_string(), *nullable),
+            // DeltaStructType::Map(nullable) => ("map".to_string(), *nullable),
+        };
+        SchemaField::new(field_name, SchemaDataType::primitive(c_type), nullable, HashMap::new())
+    }).collect::<Vec<_>>();
+    deltalake::Schema::new(fields)
+}
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
-    use std::fs::File;
-    use std::path::{Path, PathBuf};
-    use std::sync::Arc;
-    use arrow::array::{StringArray, UInt16Array};
+
     use super::*;
-    use deltalake::{action, checkpoints, DeltaDataTypeVersion, DeltaTable, DeltaTableBuilder, DeltaTableConfig, DeltaTableMetaData, SchemaDataType, SchemaField};
-    use arrow::record_batch::RecordBatch;
-    use datafusion::datasource::file_format::parquet::{DEFAULT_PARQUET_EXTENSION, ParquetFormat};
-    use datafusion::datasource::listing::ListingOptions;
-    use datafusion::prelude::{ParquetReadOptions, SessionContext};
-    use deltalake::action::{Action, Add, Remove};
-    use deltalake::checkpoints::CheckpointError;
-    use deltalake::storage::DeltaObjectStore;
-    use deltalake::writer::{DeltaWriter, RecordBatchWriter};
-    use parquet2::FallibleStreamingIterator;
-    use parquet::file::serialized_reader::SerializedFileReader;
-    use serde_json::{Map, Value};
-    use parquet::file::reader::FileReader;
-    use parquet::schema::types::Type;
+
     use sqlparser::ast::{Ident, ObjectType, Statement};
     use sqlparser::ast::Statement::{AlterTable, Truncate};
     // use datafusion::execution::context::ExecutionContext;
@@ -291,7 +344,18 @@ mod tests {
     use sqlparser::parser::Parser;
 
     #[test]
-    fn sql_parse() {
+    fn query_sql_parse() {
+        let sql = "select id, name from user where id > 5 and name != 'beat'";
+        // let dialect = GenericDialect {}; // or AnsiDialect, or your own dialect ...
+        // let statements:Vec<Statement> = Parser::parse_sql(&dialect, sql).unwrap();
+
+        let deque = DFParser::parse_sql(&sql).unwrap();
+
+        println!("AST: {:?}", deque);
+    }
+
+    #[test]
+    fn ddl_sql_parse() {
         let sql = "ALTER TABLE rustcdc ADD COLUMN name VARCHAR(50)";
 
         let dialect = GenericDialect {}; // or AnsiDialect, or your own dialect ...
@@ -306,7 +370,7 @@ mod tests {
                 } => {
                     let idents:Vec<Ident> = name.0;
                     if let Some(ident) = idents.get(0) {
-                        let table_name = ident.value;
+                        let table_name = ident.to_string();
                     }
 
                 },
@@ -332,7 +396,7 @@ mod tests {
                 } => {
                     let idents:Vec<Ident> = table_name.0;
                     if let Some(ident) = idents.get(0) {
-                        let table_name = ident.value;
+                        let table_name = ident.to_string();
                     }
                 },
                 // CreateTable
@@ -340,7 +404,7 @@ mod tests {
             }
         }
 
-        println!("AST: {:?}", statements);
+        // println!("AST: {:?}", statements);
     }
 }
 
@@ -369,20 +433,20 @@ fn parse_alter_table_op(operation: AlterTableOperation) {
                 options
             }
         } => {
-            (OpEnum::Add, value, Some(data_type));
+            // (OpEnum::Add, value, Some(data_type));
         },
         DropColumn {
             column_name: Ident{ value, quote_style },
             if_exists,
             cascade,
         } => {
-            (OpEnum::DropColumn, value, None);
+            // (OpEnum::DropColumn, value, None);
         },
         RenameColumn {
             old_column_name: Ident{ value: o_value, quote_style: o_quote_style },
             new_column_name: Ident{ value: n_value, quote_style: n_quote_style },
         } => {
-            (OpEnum::RenameColumn(o_value, n_value), value, None);
+            // (OpEnum::RenameColumn(o_value, n_value), value, None);
         },
         RenameTable { table_name } => {
             let x:Vec<Ident> = table_name.0;
