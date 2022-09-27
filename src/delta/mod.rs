@@ -26,55 +26,16 @@ use sqlparser::ast::AlterTableOperation::{AddColumn, DropColumn, RenameColumn, R
 use sqlparser::ast::Statement::{AlterTable, Drop};
 
 
+
+mod helper;
+mod value_buffer;
+
 /// [delta schema]
 ///
 /// [delta schema]: https://github.com/delta-io/delta/blob/master/PROTOCOL.md#Schema-Serialization-Format
-pub enum DeltaStructType {
-    String(bool),
-    Long(bool),
-    Integer(bool),
-    Short(bool),
-    Byte(bool),
-    Float(bool),
-    Double(bool),
-    Decimal(bool),
-    Boolean(bool),
-    Binary(bool),
-    Date(bool),
-    Timestamp(bool),
-    Array(DeltaStructType, bool),
-    Map(DeltaStructType, DeltaStructType, bool),
-}
 
 
 
-/// table_uri: column_name -> column_type
-pub fn create_delta_schema(table_schema: &HashMap<String, DeltaStructType>) -> deltalake::Schema {
-    let fields = table_schema.iter().map(|(column_name, column_type)| {
-        let field_name = column_name.clone();
-        let (c_type, nullable) = match column_type {
-            DeltaStructType::String(nullable) => ("string".to_string(), *nullable),
-            DeltaStructType::Long(nullable) => ("long".to_string(), *nullable),
-            DeltaStructType::Integer(nullable) => ("integer".to_string(), *nullable),
-            DeltaStructType::Short(nullable) => ("short".to_string(), *nullable),
-            DeltaStructType::Byte(nullable) => ("byte".to_string(), *nullable),
-            DeltaStructType::Float(nullable) => ("float".to_string(), *nullable),
-            DeltaStructType::Double(nullable) => ("double".to_string(), *nullable),
-            DeltaStructType::Decimal(nullable) => ("decimal".to_string(), *nullable),
-            DeltaStructType::Boolean(nullable) => ("boolean".to_string(), *nullable),
-            DeltaStructType::Binary(nullable) => ("binary".to_string(), *nullable),
-            DeltaStructType::Date(nullable) => ("date".to_string(), *nullable),
-            DeltaStructType::Timestamp(nullable) => ("timestamp".to_string(), *nullable),
-            _ => {
-                todo!()
-            }
-            // DeltaStructType::Array(nullable) => ("array".to_string(), *nullable),
-            // DeltaStructType::Map(nullable) => ("map".to_string(), *nullable),
-        };
-        SchemaField::new(field_name, SchemaDataType::primitive(c_type), nullable, HashMap::new())
-    }).collect::<Vec<_>>();
-    deltalake::Schema::new(fields)
-}
 
 #[cfg(test)]
 mod tests {
@@ -88,8 +49,7 @@ mod tests {
     const TABLE_PATH:&str = "file:///E:/rustProject/rust-cdc/delta_table_test";
 
     pub async fn create_table_from_schema() -> DeltaTable {
-        let schema = deltalake::Schema::new(
-            vec![
+        let schema = deltalake::Schema::new(vec![
                 SchemaField::new(
             "Id".to_string(),
             SchemaDataType::primitive("integer".to_string()),
@@ -100,29 +60,14 @@ mod tests {
                     SchemaDataType::primitive("string".to_string()),
                     true,
                     HashMap::new(),
-                )]);
-
-        let table_meta = DeltaTableMetaData::new(
-            Some("delta-rs_test_table".to_owned()),
-            Some("Table created by delta-rs tests".to_owned()),
-            None,
-            schema,
-            vec![format!("Id")],
-            HashMap::new(),
-        );
-
-        let mut table = DeltaTableBuilder::from_uri(&TABLE_PATH)
-            .with_allow_http(true)
-            .build()
-            .unwrap();
-        let protocol = action::Protocol {
-            min_reader_version: 1,
-            min_writer_version: 2,
-        };
-
-        table.create(table_meta, protocol, None, None).await.unwrap();
-
-        table
+                )
+        ]);
+        create_delta_table(TABLE_PATH,
+                           Some("delta-rs_test_table".to_owned()),
+                           Some("Table created by delta-rs tests".to_owned()),
+                           schema,
+                           vec![format!("Id")],
+                           HashMap::new()).await.unwrap()
     }
 
     pub(crate) async fn try_create_checkpoint(
@@ -342,6 +287,7 @@ mod tests {
 
     use sqlparser::dialect::GenericDialect;
     use sqlparser::parser::Parser;
+    use crate::delta::helper::create_delta_table;
 
     #[test]
     fn query_sql_parse() {

@@ -7,6 +7,7 @@ use std::io;
 use std::num::ParseIntError;
 use std::result::Result as StdResult;
 use std::str::Utf8Error;
+use deltalake::DeltaTableError;
 
 // use crate::database::Database;
 // use crate::type_info::TypeInfo;
@@ -96,7 +97,10 @@ pub enum Error {
     CommitterErr(String),
 
     #[error("committer error")]
-    BackendErr(String)
+    BackendErr(String),
+
+    #[error("delta error")]
+    DeltaError(DeltaTableError),
 
 }
 
@@ -233,6 +237,10 @@ impl From<rocksdb::Error> for Error {
     fn from(error: rocksdb::Error) -> Self {
         Error::BackendErr(error.to_string())
     }
+}
+
+impl From<DeltaTableError> for Error {
+    fn from(error: DeltaTableError) -> Self { Error::DeltaError(error) }
 }
 
 impl Error {
