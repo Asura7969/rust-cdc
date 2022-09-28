@@ -29,12 +29,32 @@ use sqlparser::ast::Statement::{AlterTable, Drop};
 
 mod helper;
 mod value_buffer;
+mod writer;
 
 /// [delta schema]
 ///
 /// [delta schema]: https://github.com/delta-io/delta/blob/master/PROTOCOL.md#Schema-Serialization-Format
 
+pub enum Record {
+    Add(RowPos, Row),
+    // offset, before, after
+    Update(RowPos, Row, Row),
+    Delete(RowPos, Row),
+    Query(String),
+}
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Row {
+    value: Map<String, Value>
+}
+
+pub enum RowPos {
+    /// binlog_name -> offset
+    Mysql(String, u64),
+
+    /// partition -> offset
+    Kafka(i32, i64)
+}
 
 
 #[cfg(test)]
@@ -83,10 +103,10 @@ mod tests {
                 table.load_version(version).await?;
             }
 
-            deltalake::checkpoints::create_checkpoint(table).await?;
+            checkpoints::create_checkpoint(table).await?;
             log::info!("Created checkpoint version {}.", version);
 
-            let removed = deltalake::checkpoints::cleanup_metadata(table).await?;
+            let removed = checkpoints::cleanup_metadata(table).await?;
             if removed > 0 {
                 log::info!("Metadata cleanup, removed {} obsolete logs.", removed);
             }

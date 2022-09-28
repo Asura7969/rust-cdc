@@ -2,3 +2,4 @@
 Cargo.lock
 .idea
 delta_table_test
+__commit_offset__

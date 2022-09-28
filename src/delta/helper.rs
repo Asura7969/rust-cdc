@@ -31,3 +31,5 @@ pub(crate) async fn create_delta_table(delta_table_uri: &str,
     Ok(table)
 
 }
+
+

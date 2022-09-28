@@ -15,7 +15,7 @@ async fn main() -> Result<(), Error> {
         .table(vec!["*".to_string()]) // all tables
         .charset("utf8mb4")
         .server_id(5)
-        .snapshot(SnapShotType::FILE) // default
+        .snapshot(SnapShotType::ROCKSDB) // default
         .connect().await?;
 
     stream.register_listener(Listener::default());
