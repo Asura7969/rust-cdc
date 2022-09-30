@@ -9,10 +9,13 @@ use arrow::{
     json::reader::Decoder,
     record_batch::*,
 };
+use arrow::array::{Array, as_primitive_array};
 use arrow::json::reader::DecoderOptions;
 use deltalake::action::ColumnCountStat;
 use deltalake::storage::DeltaObjectStore;
+use futures_util::AsyncWriteExt;
 use futures_util::io::Cursor;
+use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
 use serde_json::Value;
 
@@ -25,7 +28,7 @@ pub enum DataWriterError {
         /// The record batch schema.
         record_batch_schema: SchemaRef,
         /// The schema of the target delta table.
-        expected_schema: Arc<arrow::datatypes::Schema>,
+        expected_schema: Arc<ArrowSchema>,
     },
     /// An Arrow RecordBatch could not be created from the JSON buffer.
     #[error("Arrow RecordBatch created from JSON buffer is a None value")]
@@ -92,7 +95,7 @@ impl DataArrowWriter {
         }
 
         // Copy current cursor bytes so we can recover from failures
-        let current_cursor_bytes = self.cursor.data();
+        let current_cursor_bytes = self.cursor.into_inner();
 
         let result = self.arrow_writer.write(&record_batch);
 
@@ -124,6 +127,20 @@ impl DataArrowWriter {
             }
         }
     }
+
+    fn cursor_from_bytes(bytes: &[u8]) -> Result<Cursor<Vec<u8>>, std::io::Error> {
+        let mut cursor = Cursor::new(Vec::new());
+        cursor.write_all(bytes)?;
+        Ok(cursor)
+    }
+
+    fn new_underlying_writer(
+        cursor: Cursor<Vec<u8>,
+            arrow_schema: Arc<ArrowSchema>,
+            writer_properties: WriterProperties,
+    ) -> Result<ArrowWriter<Cursor<Vec<u8>>>, ParquetError> {
+        ArrowWriter::try_new(cursor, arrow_schema, Some(writer_properties))
+    }
 }
 
 /// Creates an Arrow RecordBatch from the passed JSON buffer.
@@ -141,4 +158,58 @@ pub fn record_batch_from_json(
         .ok_or(DataWriterError::EmptyRecordBatch)
 }
 
+fn extract_partition_values(
+    partition_cols: &[String],
+    record_batch: &RecordBatch,
+) -> Result<HashMap<String, Option<String>>, DataWriterError> {
+    let mut partition_values = HashMap::new();
 
+    for col_name in partition_cols.iter() {
+        let arrow_schema = record_batch.schema();
+
+        let i = arrow_schema.index_of(col_name)?;
+        let col = record_batch.column(i);
+
+        let partition_string = stringified_partition_value(col)?;
+
+        partition_values.insert(col_name.clone(), partition_string);
+    }
+
+    Ok(partition_values)
+}
+
+// very naive implementation for plucking the partition value from the first element of a column array.
+// ideally, we would do some validation to ensure the record batch containing the passed partition column contains only distinct values.
+// if we calculate stats _first_, we can avoid the extra iteration by ensuring max and min match for the column.
+// however, stats are optional and can be added later with `dataChange` false log entries, and it may be more appropriate to add stats _later_ to speed up the initial write.
+// a happy middle-road might be to compute stats for partition columns only on the initial write since we should validate partition values anyway, and compute additional stats later (at checkpoint time perhaps?).
+// also this does not currently support nested partition columns and many other data types.
+fn stringified_partition_value(arr: &Arc<dyn Array>) -> Result<Option<String>, DataWriterError> {
+    let data_type = arr.data_type();
+
+    if arr.is_null(0) {
+        return Ok(None);
+    }
+
+    let s = match data_type {
+        DataType::Int8 => as_primitive_array::<Int8Type>(arr).value(0).to_string(),
+        DataType::Int16 => as_primitive_array::<Int16Type>(arr).value(0).to_string(),
+        DataType::Int32 => as_primitive_array::<Int32Type>(arr).value(0).to_string(),
+        DataType::Int64 => as_primitive_array::<Int64Type>(arr).value(0).to_string(),
+        DataType::UInt8 => as_primitive_array::<UInt8Type>(arr).value(0).to_string(),
+        DataType::UInt16 => as_primitive_array::<UInt16Type>(arr).value(0).to_string(),
+        DataType::UInt32 => as_primitive_array::<UInt32Type>(arr).value(0).to_string(),
+        DataType::UInt64 => as_primitive_array::<UInt64Type>(arr).value(0).to_string(),
+        DataType::Utf8 => {
+            let data = arrow::array::as_string_array(arr);
+
+            data.value(0).to_string()
+        }
+        // TODO: handle more types
+        _ => {
+            unimplemented!("Unimplemented data type: {:?}", data_type);
+        }
+    };
+
+    Ok(Some(s))
+}
