@@ -31,6 +31,8 @@ mod helper;
 mod value_buffer;
 mod writer;
 
+pub use writer::DataWriterError;
+
 /// [delta schema]
 ///
 /// [delta schema]: https://github.com/delta-io/delta/blob/master/PROTOCOL.md#Schema-Serialization-Format
@@ -40,7 +42,7 @@ pub enum Record {
     // offset, before, after
     Update(RowPos, Row, Row),
     Delete(RowPos, Row),
-    Query(String),
+    Query(RowPos, String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

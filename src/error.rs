@@ -8,6 +8,7 @@ use std::num::ParseIntError;
 use std::result::Result as StdResult;
 use std::str::Utf8Error;
 use deltalake::DeltaTableError;
+use crate::delta::DataWriterError;
 
 // use crate::database::Database;
 // use crate::type_info::TypeInfo;
@@ -101,6 +102,9 @@ pub enum Error {
 
     #[error("delta error")]
     DeltaError(DeltaTableError),
+
+    #[error("delta write error")]
+    DataWriterError(DataWriterError),
 
 }
 
@@ -241,6 +245,10 @@ impl From<rocksdb::Error> for Error {
 
 impl From<DeltaTableError> for Error {
     fn from(error: DeltaTableError) -> Self { Error::DeltaError(error) }
+}
+
+impl From<DataWriterError> for Error {
+    fn from(error: DataWriterError) -> Self { Error::DataWriterError(error) }
 }
 
 impl Error {

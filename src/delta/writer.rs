@@ -1,5 +1,9 @@
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::sync::Arc;
+use std::convert::TryFrom;
+use std::io::Write;
+
 use parquet::arrow::ArrowWriter;
 
 use arrow::{
@@ -9,19 +13,24 @@ use arrow::{
     json::reader::Decoder,
     record_batch::*,
 };
-use arrow::array::{Array, as_primitive_array};
+use arrow::array::{Array, as_primitive_array, as_struct_array, StructArray};
 use arrow::json::reader::DecoderOptions;
+use datafusion::datasource::source_as_provider;
 use deltalake::action::ColumnCountStat;
+use deltalake::DeltaDataTypeLong;
 use deltalake::storage::DeltaObjectStore;
 use futures_util::AsyncWriteExt;
-use futures_util::io::Cursor;
+use log::{info, warn};
 use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
 use serde_json::Value;
+use crate::error::Error;
+
 
 type NullCounts = HashMap<String, ColumnCountStat>;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DataWriterError {
     #[error("Arrow RecordBatch schema does not match: RecordBatch schema: {record_batch_schema}, {expected_schema}")]
     SchemaMismatch {
@@ -33,6 +42,40 @@ pub enum DataWriterError {
     /// An Arrow RecordBatch could not be created from the JSON buffer.
     #[error("Arrow RecordBatch created from JSON buffer is a None value")]
     EmptyRecordBatch,
+
+    /// Indicates that a partial write was performed and error records were discarded.
+    #[error("Failed to write some values to parquet. Sample error: {sample_error}.")]
+    PartialParquetWrite {
+        /// Vec of tuples where the first element of each tuple is the skipped value and the second element is the [`ParquetError`] associated with it.
+        skipped_values: Vec<(Value, ParquetError)>,
+        /// A sample [`ParquetError`] representing the overall partial write.
+        sample_error: ParquetError,
+    },
+
+    /// Parquet write failed.
+    #[error("Parquet write failed: {source}")]
+    Parquet {
+        /// The wrapped [`ParquetError`]
+        #[from]
+        source: ParquetError,
+    },
+
+    /// Arrow returned an error.
+    #[error("Arrow interaction failed: {source}")]
+    Arrow {
+        /// The wrapped [`ArrowError`]
+        #[from]
+        source: ArrowError,
+    },
+
+    /// Error returned from std::io
+    #[error("std::io::Error: {source}")]
+    Io {
+        /// The wrapped [`std::io::Error`]
+        #[from]
+        source: std::io::Error,
+    },
+
 }
 
 pub struct DataWriter {
@@ -82,6 +125,29 @@ impl DataArrowWriter {
         }
     }
 
+    async fn write_partial(
+        &mut self,
+        partition_columns: &[String],
+        arrow_schema: Arc<ArrowSchema>,
+        json_buffer: Vec<Value>,
+        parquet_error: ParquetError,
+    ) -> Result<(), DataWriterError> {
+        warn!("Failed with parquet error while writing record batch. Attempting quarantine of bad records.");
+        let (good, bad) = quarantine_failed_parquet_rows(arrow_schema.clone(), json_buffer)?;
+        let record_batch = record_batch_from_json(arrow_schema, good.as_slice())?;
+        self.write_record_batch(partition_columns, record_batch)
+            .await?;
+        info!(
+            "Wrote {} good records to record batch and quarantined {} bad records.",
+            good.len(),
+            bad.len()
+        );
+        Err(DataWriterError::PartialParquetWrite {
+            skipped_values: bad,
+            sample_error: parquet_error,
+        })
+    }
+
     /// Writes the record batch in-memory and updates internal state accordingly.
     /// This method buffers the write stream internally so it can be invoked for many record batches and flushed after the appropriate number of bytes has been written.
     async fn write_record_batch(
@@ -95,7 +161,7 @@ impl DataArrowWriter {
         }
 
         // Copy current cursor bytes so we can recover from failures
-        let current_cursor_bytes = self.cursor.into_inner();
+        let current_cursor_bytes = self.cursor.clone().into_inner();
 
         let result = self.arrow_writer.write(&record_batch);
 
@@ -123,7 +189,7 @@ impl DataArrowWriter {
                 let _ = std::mem::replace(&mut self.arrow_writer, arrow_writer);
                 self.partition_values.clear();
 
-                Err(e.into())
+                Err(DataWriterError::Parquet { source:e })
             }
         }
     }
@@ -135,11 +201,84 @@ impl DataArrowWriter {
     }
 
     fn new_underlying_writer(
-        cursor: Cursor<Vec<u8>,
+            cursor: Cursor<Vec<u8>>,
             arrow_schema: Arc<ArrowSchema>,
             writer_properties: WriterProperties,
     ) -> Result<ArrowWriter<Cursor<Vec<u8>>>, ParquetError> {
         ArrowWriter::try_new(cursor, arrow_schema, Some(writer_properties))
+    }
+}
+
+fn apply_null_counts(
+    partition_columns: &[String],
+    array: &StructArray,
+    null_counts: &mut HashMap<String, ColumnCountStat>,
+    nest_level: i32,
+) {
+    let fields = match array.data_type() {
+        DataType::Struct(fields) => fields,
+        _ => unreachable!(),
+    };
+
+    array
+        .columns()
+        .iter()
+        .zip(fields)
+        .for_each(|(column, field)| {
+            let key = field.name().to_owned();
+
+            // Do not include partition columns in statistics
+            if nest_level == 0 && partition_columns.contains(&key) {
+                return;
+            }
+
+            apply_null_counts_for_column(partition_columns, null_counts, nest_level, column, field);
+        });
+}
+
+fn apply_null_counts_for_column(
+    partition_columns: &[String],
+    null_counts: &mut HashMap<String, ColumnCountStat>,
+    nest_level: i32,
+    column: &&Arc<dyn Array>,
+    field: &Field,
+) {
+    let key = field.name().to_owned();
+
+    match column.data_type() {
+        // Recursive case
+        DataType::Struct(_) => {
+            let col_struct = null_counts
+                .entry(key)
+                .or_insert_with(|| ColumnCountStat::Column(HashMap::new()));
+
+            match col_struct {
+                ColumnCountStat::Column(map) => {
+                    apply_null_counts(
+                        partition_columns,
+                        as_struct_array(column),
+                        map,
+                        nest_level + 1,
+                    );
+                }
+                _ => unreachable!(),
+            }
+        }
+        // Base case
+        _ => {
+            let col_struct = null_counts
+                .entry(key.clone())
+                .or_insert_with(|| ColumnCountStat::Value(0));
+
+            match col_struct {
+                ColumnCountStat::Value(n) => {
+                    let null_count = column.null_count() as DeltaDataTypeLong;
+                    let n = null_count + *n;
+                    null_counts.insert(key, ColumnCountStat::Value(n));
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 }
 
@@ -156,6 +295,30 @@ pub fn record_batch_from_json(
     decoder
         .next_batch(&mut value_iter)?
         .ok_or(DataWriterError::EmptyRecordBatch)
+}
+
+type BadValue = (Value, ParquetError);
+
+fn quarantine_failed_parquet_rows(
+    arrow_schema: Arc<ArrowSchema>,
+    values: Vec<Value>,
+) -> Result<(Vec<Value>, Vec<BadValue>), DataWriterError> {
+    let mut good: Vec<Value> = Vec::new();
+    let mut bad: Vec<BadValue> = Vec::new();
+
+    for value in values {
+        let record_batch = record_batch_from_json(arrow_schema.clone(), &[value.clone()])?;
+
+        let cursor = Cursor::new(Vec::new());;
+        let mut writer = ArrowWriter::try_new(cursor.clone(), arrow_schema.clone(), None)?;
+
+        match writer.write(&record_batch) {
+            Ok(_) => good.push(value),
+            Err(e) => bad.push((value, e)),
+        }
+    }
+
+    Ok((good, bad))
 }
 
 fn extract_partition_values(
