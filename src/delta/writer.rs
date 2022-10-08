@@ -17,10 +17,11 @@ use arrow::array::{Array, as_primitive_array, as_struct_array, StructArray};
 use arrow::json::reader::DecoderOptions;
 use datafusion::datasource::source_as_provider;
 use deltalake::action::ColumnCountStat;
-use deltalake::DeltaDataTypeLong;
+use deltalake::{DeltaDataTypeLong, DeltaTable, DeltaTableBuilder, DeltaTableError, DeltaTableMetaData};
 use deltalake::storage::DeltaObjectStore;
 use futures_util::AsyncWriteExt;
 use log::{info, warn};
+use parquet::basic::Compression;
 use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
 use serde_json::Value;
@@ -42,6 +43,10 @@ pub enum DataWriterError {
     /// An Arrow RecordBatch could not be created from the JSON buffer.
     #[error("Arrow RecordBatch created from JSON buffer is a None value")]
     EmptyRecordBatch,
+
+    /// A record was written that was not a JSON object.
+    #[error("Record {0} is not a JSON object")]
+    InvalidRecord(String),
 
     /// Indicates that a partial write was performed and error records were discarded.
     #[error("Failed to write some values to parquet. Sample error: {sample_error}.")]
@@ -76,15 +81,170 @@ pub enum DataWriterError {
         source: std::io::Error,
     },
 
+    #[error("deltalake::DeltaTableError: {source}")]
+    DeltaError {
+        #[from]
+        source: DeltaTableError,
+    }
+
 }
 
 pub struct DataWriter {
-    storage: DeltaObjectStore,
+    storage: Arc<DeltaObjectStore>,
     arrow_schema_ref: Arc<ArrowSchema>,
     writer_properties: WriterProperties,
     partition_columns: Vec<String>,
     arrow_writers: HashMap<String, DataArrowWriter>,
 }
+
+impl DataWriter {
+    /// Creates a DataWriter to write to the given table
+    pub fn for_table(
+        table: &DeltaTable,
+        options: HashMap<String, String>,
+    ) -> Result<DataWriter, DataWriterError> {
+        let storage: Arc<DeltaObjectStore> = DeltaTableBuilder::from_uri(&table.table_uri())
+            .with_storage_options(options)
+            .build_storage()?;
+
+        // Initialize an arrow schema ref from the delta table schema
+        let metadata = table.get_metadata()?;
+        let arrow_schema = <ArrowSchema as TryFrom<&deltalake::Schema>>::try_from(&metadata.schema)?;
+        let arrow_schema_ref = Arc::new(arrow_schema);
+        let partition_columns = metadata.partition_columns.clone();
+
+        // Initialize writer properties for the underlying arrow writer
+        let writer_properties = WriterProperties::builder()
+            // NOTE: Consider extracting config for writer properties and setting more than just compression
+            .set_compression(Compression::SNAPPY)
+            .build();
+
+        Ok(Self {
+            storage,
+            arrow_schema_ref,
+            writer_properties,
+            partition_columns,
+            arrow_writers: HashMap::new(),
+        })
+    }
+
+    /// Retrieves the latest schema from table, compares to the current and updates if changed.
+    /// When schema is updated then `true` is returned which signals the caller that parquet
+    /// created file or arrow batch should be revisited.
+    pub fn update_schema(
+        &mut self,
+        metadata: &DeltaTableMetaData,
+    ) -> Result<bool, DataWriterError> {
+        let schema: ArrowSchema = <ArrowSchema as TryFrom<&deltalake::Schema>>::try_from(&metadata.schema)?;
+
+        let schema_updated = self.arrow_schema_ref.as_ref() != &schema
+            || self.partition_columns != metadata.partition_columns;
+
+        if schema_updated {
+            let _ = std::mem::replace(&mut self.arrow_schema_ref, Arc::new(schema));
+            let _ = std::mem::replace(
+                &mut self.partition_columns,
+                metadata.partition_columns.clone(),
+            );
+        }
+
+        Ok(schema_updated)
+    }
+
+    pub fn arrow_schema(&self) -> Arc<arrow::datatypes::Schema> {
+        self.arrow_schema_ref.clone()
+    }
+
+    /// Writes the given values to internal parquet buffers for each represented partition.
+    pub async fn write(&mut self, values: Vec<Value>) -> Result<(), DataWriterError> {
+        let mut partial_writes: Vec<(Value, ParquetError)> = Vec::new();
+        let arrow_schema = self.arrow_schema();
+
+        for (key, values) in self.divide_by_partition_values(values)? {
+            match self.arrow_writers.get_mut(&key) {
+                Some(writer) => collect_partial_write_failure(
+                    &mut partial_writes,
+                    writer
+                        .write_values(&self.partition_columns, arrow_schema.clone(), values)
+                        .await,
+                )?,
+                None => {
+                    let mut writer =
+                        DataArrowWriter::new(arrow_schema.clone(), self.writer_properties.clone())?;
+
+                    collect_partial_write_failure(
+                        &mut partial_writes,
+                        writer
+                            .write_values(&self.partition_columns, self.arrow_schema(), values)
+                            .await,
+                    )?;
+
+                    self.arrow_writers.insert(key, writer);
+                }
+            }
+        }
+
+        if !partial_writes.is_empty() {
+            let sample = partial_writes.first().map(|t| t.to_owned());
+            if let Some((_, e)) = sample {
+                return Err(DataWriterError::PartialParquetWrite {
+                    skipped_values: partial_writes,
+                    sample_error: e,
+                });
+            } else {
+                unreachable!()
+            }
+        }
+
+        Ok(())
+    }
+
+    fn divide_by_partition_values(
+        &self,
+        records: Vec<Value>,
+    ) -> Result<HashMap<String, Vec<Value>>, DataWriterError> {
+        let mut partitioned_records: HashMap<String, Vec<Value>> = HashMap::new();
+
+        for record in records {
+            let partition_value = self.json_to_partition_values(&record)?;
+            match partitioned_records.get_mut(&partition_value) {
+                Some(vec) => vec.push(record),
+                None => {
+                    partitioned_records.insert(partition_value, vec![record]);
+                }
+            };
+        }
+
+        Ok(partitioned_records)
+    }
+
+    fn json_to_partition_values(&self, value: &Value) -> Result<String, DataWriterError> {
+        if let Some(obj) = value.as_object() {
+            let key: Vec<String> = self
+                .partition_columns
+                .iter()
+                .map(|c| obj.get(c).unwrap_or(&Value::Null).to_string())
+                .collect();
+            return Ok(key.join("/"));
+        }
+
+        Err(DataWriterError::InvalidRecord(value.to_string()))
+    }
+}
+
+fn collect_partial_write_failure(
+    partial_writes: &mut Vec<(Value, ParquetError)>,
+    writer_result: Result<(), DataWriterError>,
+) -> Result<(), DataWriterError> {
+    match writer_result {
+        Err(DataWriterError::PartialParquetWrite { skipped_values, .. }) => {
+            partial_writes.extend(skipped_values);
+            Ok(())
+        }
+        _ => writer_result,
+    }
+}
+
 
 /// Writes messages to an underlying arrow buffer.
 pub(crate) struct DataArrowWriter {
@@ -98,6 +258,33 @@ pub(crate) struct DataArrowWriter {
 }
 
 impl DataArrowWriter {
+
+    fn new(
+        arrow_schema: Arc<ArrowSchema>,
+        writer_properties: WriterProperties,
+    ) -> Result<Self, ParquetError> {
+        let cursor = Cursor::new(Vec::new());
+        let arrow_writer = Self::new_underlying_writer(
+            cursor.clone(),
+            arrow_schema.clone(),
+            writer_properties.clone(),
+        )?;
+
+        let partition_values = HashMap::new();
+        let null_counts = NullCounts::new();
+        let buffered_record_batch_count = 0;
+
+        Ok(Self {
+            arrow_schema,
+            writer_properties,
+            cursor,
+            arrow_writer,
+            partition_values,
+            null_counts,
+            buffered_record_batch_count,
+        })
+    }
+
     async fn write_values(
         &mut self,
         partition_columns: &[String],

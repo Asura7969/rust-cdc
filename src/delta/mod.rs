@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 use arrow::array::{StringArray, UInt16Array};
 use arrow::array::Int32Array;
 use arrow::datatypes::{DataType, Field, Schema};
@@ -32,6 +33,9 @@ mod value_buffer;
 mod writer;
 
 pub use writer::DataWriterError;
+use crate::delta::value_buffer::ValueBuffers;
+use crate::delta::writer::DataWriter;
+use crate::error::Error;
 
 /// [delta schema]
 ///
@@ -56,6 +60,70 @@ pub enum RowPos {
 
     /// partition -> offset
     Kafka(i32, i64)
+}
+
+
+
+struct IngestProcessor {
+    table: DeltaTable,
+    delta_writer: DataWriter,
+    value_buffers: ValueBuffers,
+    latency_timer: Instant,
+}
+
+impl IngestProcessor {
+    async fn new(
+        table_uri: &str,
+        opts: IngestOptions,
+    ) -> Result<IngestProcessor, Error> {
+
+        let table = DeltaTableBuilder::from_uri(table_uri).with_storage_options(HashMap::new()).build()?;
+        let delta_writer = DataWriter::for_table(&table, HashMap::new())?;
+
+        Ok(IngestProcessor {
+            table,
+            delta_writer,
+            value_buffers: ValueBuffers::default(),
+            latency_timer: Instant::now(),
+        })
+    }
+}
+
+pub struct IngestOptions {
+    /// Unique per topic per environment. **Must** be the same for all processes that are part of a single job.
+    /// It's used as a prefix for the `txn` actions to track messages offsets between partition/writers.
+    pub app_id: String,
+    /// Max desired latency from when a message is received to when it is written and
+    /// committed to the target delta table (in seconds)
+    pub allowed_latency: u64,
+    /// Number of messages to buffer before writing a record batch.
+    pub max_messages_per_batch: usize,
+    /// Desired minimum number of compressed parquet bytes to buffer in memory
+    /// before writing to storage and committing a transaction.
+    pub min_bytes_per_file: usize,
+    /// An optional dead letter table to write messages that fail deserialization, transformation or schema validation.
+    pub dlq_table_uri: Option<String>,
+    /// If `true` then application will write checkpoints on each 10th commit.
+    pub write_checkpoints: bool,
+    /// Additional properties to initialize the Kafka consumer with.
+    pub additional_kafka_settings: Option<HashMap<String, String>>,
+    /// A statsd endpoint to send statistics to.
+    pub statsd_endpoint: String,
+}
+
+impl Default for IngestOptions {
+    fn default() -> Self {
+        IngestOptions {
+            app_id: "cdc_delta_ingest".to_string(),
+            allowed_latency: 300,
+            max_messages_per_batch: 5000,
+            min_bytes_per_file: 134217728,
+            dlq_table_uri: None,
+            additional_kafka_settings: None,
+            write_checkpoints: false,
+            statsd_endpoint: "localhost:8125".to_string(),
+        }
+    }
 }
 
 
