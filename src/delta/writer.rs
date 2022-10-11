@@ -15,12 +15,14 @@ use arrow::{
 };
 use arrow::array::{Array, as_primitive_array, as_struct_array, StructArray};
 use arrow::json::reader::DecoderOptions;
+use bytes::Bytes;
 use datafusion::datasource::source_as_provider;
 use deltalake::action::ColumnCountStat;
 use deltalake::{DeltaDataTypeLong, DeltaTable, DeltaTableBuilder, DeltaTableError, DeltaTableMetaData};
 use deltalake::storage::DeltaObjectStore;
 use futures_util::AsyncWriteExt;
 use log::{info, warn};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
 use parquet::basic::Compression;
 use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
@@ -151,7 +153,7 @@ impl DataWriter {
         Ok(schema_updated)
     }
 
-    pub fn arrow_schema(&self) -> Arc<arrow::datatypes::Schema> {
+    pub fn arrow_schema(&self) -> Arc<Schema> {
         self.arrow_schema_ref.clone()
     }
 

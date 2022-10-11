@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use deltalake::DeltaTableError;
 use serde_json::Value;
 
@@ -16,7 +17,7 @@ impl ValueBuffers {
     pub(crate) fn add(
         &mut self,
         partition: String,
-        offset: DataOffset,
+        key: UniqueKey,
         value: Value,
     ) -> Result<(), DeltaTableError> {
         let buffer = self
@@ -24,9 +25,29 @@ impl ValueBuffers {
             .entry(partition)
             .or_insert_with(ValueBuffer::new);
 
-        buffer.add(value, offset);
+        buffer.add(value, key);
         self.len += 1;
         Ok(())
+    }
+
+    pub(crate) fn remove(
+        &mut self,
+        partition: String,
+        key: UniqueKey,
+    ) -> Result<(), DeltaTableError> {
+        match self.buffers.get_mut(&partition) {
+            Some(buffer) => {
+                buffer.remove(key);
+                self.len -= 1;
+            },
+            _ => {}
+        };
+        Ok(())
+    }
+
+    pub(crate) fn clean(&mut self) {
+        self.buffers.clear();
+        self.len = 0;
     }
 
     /// Returns the total number of items stored across each partition specific [`ValueBuffer`].
@@ -36,18 +57,12 @@ impl ValueBuffers {
 
     /// Returns values, partition offsets and partition counts currently held in buffer and resets buffers to empty.
     pub(crate) fn consume(&mut self) -> ConsumedBuffers {
-        let mut partition_offsets = HashMap::new();
-        let mut partition_counts = HashMap::new();
 
         let values = self
             .buffers
             .iter_mut()
             .filter_map(|(partition, buffer)| match buffer.consume() {
-                Some((values, offset)) => {
-                    partition_offsets.insert(partition.clone(), offset);
-                    partition_counts.insert(partition.clone(), values.len());
-                    Some(values)
-                }
+                Some(values) => Some(values),
                 None => None,
             })
             .flatten()
@@ -57,8 +72,6 @@ impl ValueBuffers {
 
         ConsumedBuffers {
             values,
-            partition_offsets,
-            partition_counts,
         }
     }
 
@@ -73,12 +86,53 @@ impl ValueBuffers {
 
 pub type DataOffset = i64;
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum UniqueKey {
+    Number(i64),
+    Str(String),
+    Empty
+}
+
+// impl PartialEq for UniqueKey {
+//     fn eq(&self, other: &Self) -> bool {
+//         if let &UniqueKey::Number(num) = &self {
+//             match other {
+//                 UniqueKey::Number(n) => num == n,
+//                 _ => false
+//             }
+//         } else if let &UniqueKey::Str(string) = &self {
+//             match other {
+//                 UniqueKey::Str(s1) => string.eq(s1),
+//                 _ => false
+//             }
+//         }
+//     }
+//
+//     fn ne(&self, other: &Self) -> bool {
+//         !self.eq(other)
+//     }
+// }
+
+impl Hash for UniqueKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match &self {
+            &UniqueKey::Number(num) => num.hash(state),
+            &UniqueKey::Str(s) => s.hash(state),
+            _ => {}
+        }
+    }
+
+    // fn hash_slice<H: Hasher>(data: &[Self], state: &mut H) where Self: Sized {
+    //     todo!()
+    // }
+}
+
+
 #[derive(Debug)]
 struct ValueBuffer {
-    /// The offset of the last message stored in the buffer.
-    last_offset: DataOffset,
     /// The buffer of [`Value`] instances.
-    values: Vec<Value>,
+    values: HashMap<UniqueKey, Value>,
+
 }
 
 impl ValueBuffer {
@@ -89,22 +143,26 @@ impl ValueBuffer {
             // will be accepted, since message offsets starts with 0.
             // Hence, if the buffer is "consumed", the values list is emptied, but the last_offset
             // should always holds the value to prevent messages duplicates.
-            last_offset: -1,
-            values: Vec::new(),
+            values: HashMap::new(),
         }
     }
 
     /// Adds the value to buffer and stores its offset as the `last_offset` of the buffer.
-    pub(crate) fn add(&mut self, value: Value, offset: DataOffset) {
-        self.last_offset = offset;
-        self.values.push(value);
+    pub(crate) fn add(&mut self, value: Value, key: UniqueKey) {
+        self.values.insert(key, value);
+    }
+
+    pub(crate) fn remove(&mut self, key: UniqueKey) {
+        self.values.remove(&key);
     }
 
     /// Consumes and returns the buffer and last offset so it may be written to delta and clears internal state.
-    pub(crate) fn consume(&mut self) -> Option<(Vec<Value>, DataOffset)> {
+    pub(crate) fn consume(&mut self) -> Option<Vec<Value>> {
         if !self.values.is_empty() {
-            assert!(self.last_offset > -1);
-            Some((std::mem::take(&mut self.values), self.last_offset))
+            let vec = self.values.iter_mut()
+                .map(|t| t.1.clone())
+                .collect::<Vec<Value>>();
+            Some(vec)
         } else {
             None
         }
@@ -115,8 +173,8 @@ impl ValueBuffer {
 pub(crate) struct ConsumedBuffers {
     /// The vector of [`Value`] instances consumed.
     pub(crate) values: Vec<Value>,
-    /// A [`HashMap`] from partition to last offset represented by the consumed buffers.
-    pub(crate) partition_offsets: HashMap<String, DataOffset>,
-    /// A [`HashMap`] from partition to number of messages consumed for each partition.
-    pub(crate) partition_counts: HashMap<String, usize>,
+    // /// A [`HashMap`] from partition to last offset represented by the consumed buffers.
+    // pub(crate) partition_offsets: HashMap<String, DataOffset>,
+    // /// A [`HashMap`] from partition to number of messages consumed for each partition.
+    // pub(crate) partition_counts: HashMap<String, usize>,
 }

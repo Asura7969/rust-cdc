@@ -5,9 +5,10 @@ use std::sync::Arc;
 use std::time::Instant;
 use arrow::array::{StringArray, UInt16Array};
 use arrow::array::Int32Array;
+use arrow::compute::math_op;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::json;
-use deltalake::{action, checkpoints, DeltaDataTypeVersion, DeltaTable, DeltaTableBuilder, DeltaTableConfig, DeltaTableMetaData, SchemaDataType, SchemaField};
+use deltalake::{action, checkpoints, DeltaDataTypeVersion, DeltaTable, DeltaTableBuilder, DeltaTableConfig, DeltaTableError, DeltaTableMetaData, SchemaDataType, SchemaField};
 use arrow::record_batch::RecordBatch;
 use datafusion::datasource::file_format::parquet::{DEFAULT_PARQUET_EXTENSION, ParquetFormat};
 use datafusion::datasource::listing::ListingOptions;
@@ -25,15 +26,15 @@ use parquet::schema::types::Type;
 use sqlparser::ast::{AlterTableOperation, ColumnDef, Ident, ObjectName};
 use sqlparser::ast::AlterTableOperation::{AddColumn, DropColumn, RenameColumn, RenameTable};
 use sqlparser::ast::Statement::{AlterTable, Drop};
-
-
+use serde::{Deserialize, Serialize};
+use stable_bloom_filter::stable::StableBloomFilter;
 
 mod helper;
 mod value_buffer;
 mod writer;
 
 pub use writer::DataWriterError;
-use crate::delta::value_buffer::ValueBuffers;
+use crate::delta::value_buffer::{DataOffset, UniqueKey, ValueBuffers};
 use crate::delta::writer::DataWriter;
 use crate::error::Error;
 
@@ -42,41 +43,42 @@ use crate::error::Error;
 /// [delta schema]: https://github.com/delta-io/delta/blob/master/PROTOCOL.md#Schema-Serialization-Format
 
 pub enum Record {
-    Add(RowPos, Row),
-    // offset, before, after
-    Update(RowPos, Row, Row),
-    Delete(RowPos, Row),
-    Query(RowPos, String),
+    /// binlog_name, offset, body
+    Mysql(String, u64, OpBody),
+    /// partition, offset, body
+    Kafka(i32, i64, OpBody),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OpBody {
+    Add(Row),
+    // offset, before, after
+    Update(Row, Row),
+    Delete(Row),
+    Query(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Row {
     value: Map<String, Value>
 }
-
-pub enum RowPos {
-    /// binlog_name -> offset
-    Mysql(String, u64),
-
-    /// partition -> offset
-    Kafka(i32, i64)
-}
-
-
 
 struct IngestProcessor {
     table: DeltaTable,
     delta_writer: DataWriter,
     value_buffers: ValueBuffers,
     latency_timer: Instant,
+    filter: StableBloomFilter,
+    opts: IngestOptions,
 }
+
+const EMPTY_STR:&str = "";
 
 impl IngestProcessor {
     async fn new(
         table_uri: &str,
         opts: IngestOptions,
     ) -> Result<IngestProcessor, Error> {
-
+        let filter = StableBloomFilter::new_default(10_000, 0.01);
         let table = DeltaTableBuilder::from_uri(table_uri).with_storage_options(HashMap::new()).build()?;
         let delta_writer = DataWriter::for_table(&table, HashMap::new())?;
 
@@ -85,9 +87,106 @@ impl IngestProcessor {
             delta_writer,
             value_buffers: ValueBuffers::default(),
             latency_timer: Instant::now(),
+            filter,
+            opts,
         })
     }
+
+    fn extract_partition_value(&mut self, row: &Row) -> String {
+        match &self.opts.partition_field {
+            Some(field) => {
+                if let Some(v) = row.value.get(field.as_str()) {
+                    v.to_string()
+                } else {
+                    EMPTY_STR.to_string()
+                }
+            },
+            _ => EMPTY_STR.to_string()
+        }
+    }
+
+    fn extract_unique_key_value(&mut self, row: &Row) -> UniqueKey {
+        match &self.opts.unique_key_fields {
+            Some(fields) => {
+                let v = fields.iter().map(|field| {
+                    if let Some(v) = row.value.get(field.as_str()) {
+                        v.to_string()
+                    } else {
+                        EMPTY_STR.to_string()
+                    }
+                }).collect::<Vec<_>>().join("");
+                UniqueKey::Str(v)
+            },
+            _ => UniqueKey::Str(EMPTY_STR.to_string())
+        }
+    }
+
+    async fn process_record(&mut self, record: Record) {
+        match record {
+            Record::Mysql(file_name, pos, body) => {
+                match body {
+                    OpBody::Add(row) => {
+                        // serde_json::to_value(row).map_err(|e| todo!())?
+                        self.add(row);
+                    },
+                    // offset, before, after
+                    OpBody::Update(before, after) => {
+                        // before
+                        self.remove(before);
+                        // after
+                        self.add(after);
+                    },
+                    OpBody::Delete(row) => {
+                        self.remove(row);
+                    },
+                    OpBody::Query(query) => {
+
+                    },
+                }
+            },
+            Record::Kafka(partition_id, offset, body) => {
+                // to_kafka_value(body)
+                todo!()
+            },
+            _ => {
+                unimplemented!()
+            }
+        };
+        // self.delta_writer.write(vec![values]);
+    }
+
+    /// mysql binlog
+    ///     insert:
+    ///         partition = partition field value
+    ///         key       = UniqueKey(field value or Combined field values)
+    ///     update = remove old value + add new value
+    /// kafka
+    ///     partition = kafka partition
+    ///     key       = kafka partition offset
+    async fn add(&mut self,
+                 row: Row) -> Result<(), DeltaTableError> {
+        let partition = self.extract_partition_value(&row);
+        let unique_key = self.extract_unique_key_value(&row);
+        let value = Value::Object(row.value);
+
+        self.value_buffers.add(partition, unique_key, value)
+    }
+
+    async fn remove(&mut self,
+                    row: Row) -> Result<(), DeltaTableError> {
+        let partition = self.extract_partition_value(&row);
+        let unique_key = self.extract_unique_key_value(&row);
+        self.value_buffers.remove(partition, unique_key)
+    }
+
+
+
 }
+
+fn to_kafka_value(record: OpBody) -> Vec<Value> {
+    todo!()
+}
+
 
 pub struct IngestOptions {
     /// Unique per topic per environment. **Must** be the same for all processes that are part of a single job.
@@ -107,6 +206,8 @@ pub struct IngestOptions {
     pub write_checkpoints: bool,
     /// Additional properties to initialize the Kafka consumer with.
     pub additional_kafka_settings: Option<HashMap<String, String>>,
+    pub partition_field: Option<String>,
+    pub unique_key_fields: Option<Vec<String>>,
     /// A statsd endpoint to send statistics to.
     pub statsd_endpoint: String,
 }
@@ -120,6 +221,8 @@ impl Default for IngestOptions {
             min_bytes_per_file: 134217728,
             dlq_table_uri: None,
             additional_kafka_settings: None,
+            partition_field: None,
+            unique_key_fields: None,
             write_checkpoints: false,
             statsd_endpoint: "localhost:8125".to_string(),
         }
